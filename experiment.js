@@ -1,20 +1,26 @@
 /*
- * Psych 251 experiment template: demo experiment.
+ * Partial replication of Yin, Jia & Wakslak (2024, PNAS): "AI can help people feel heard, but
+ * an AI label diminishes this impact". Only the label effect is replicated, not the 2 x 2.
  *
- * This file is the one you edit. It builds a jsPsych 8 timeline and wires it to DataSaver
- * (src/save.js), which writes to your Firebase project. Everything below is a working
- * example you can replace piece by piece:
+ * Design summary
+ *   - Independent variable: response label, "ai" vs "human"; between-subjects, random 50/50
+ *     assignment. Recorded as `condition` on every row and on the participant document.
+ *   - Everyone reads the same standardized situation and the same fixed response. Only the
+ *     sentence introducing the response differs between conditions.
+ *   - Dependent measures (SI Appendix, "Part 3 Survey Questions", pp. 17-19), 7-point
+ *     agreement scale, one page, items in the SI order, no randomization:
+ *       feeling heard (primary): 6 items -> `feeling_heard` (mean, only if all 6 answered)
+ *       response accuracy:       2 items -> `response_accuracy`
+ *       responder understanding: 2 items -> `responder_understood`
+ *   - Manipulation check, after all outcomes: the SI suspicion item, 1-7 -> `suspicion`.
+ *   - Demographics last, with the categories the paper reports (Methods, p. 8).
+ *   - One stimulus, so one rating trial per participant. Trial rows: consent, instructions,
+ *     ratings, suspicion, demographics, debrief.
+ *   - Exclusions: none beyond consent and a computable `feeling_heard`. The analysis (in
+ *     writeup/replication-report.qmd) applies that rule; nothing is dropped here.
  *
- *   1. consent           course-wide consent text (required at the start of every study)
- *   2. instructions
- *   3. demographics      a multi-question survey page (jsPsych "survey" plugin, SurveyJS)
- *   4. framing task      a between-subjects manipulation with random assignment
- *   5. lexical decision  a short keyboard reaction-time block (trial-level data)
- *   6. feedback          Likert + free text
- *   7. debrief           saves data, then shows thanks or redirects to Prolific
- *
- * The example manipulation is the classic "Asian disease" framing problem
- * (Tversky & Kahneman, 1981): people are risk-averse for gains and risk-seeking for losses.
+ * Settings and the demographics page are the parts most likely to need editing. Everything
+ * below the settings is wired to DataSaver (src/save.js), which writes to your Firebase project.
  */
 
 // ---------------------------------------------------------------------------
@@ -25,11 +31,10 @@ window.TEMPLATE_VERSION = "0.1.0";
 const EXPERIMENT = {
   // Firestore path: experiments/<id>/participants/... Change it when you start a new study
   // so pilot data and real data never mix (e.g. "smith2016-pilot-a", "smith2016-final").
-  id: "framing-demo",
+  id: "yin2024-label-pilot-a",
 
   // Trials per Firestore write. 1 = save every trial the moment it finishes (dropouts leave
-  // partial data). The free tier allows 20,000 writes/day: with 200 participants x 100 trials
-  // you would exceed it, so raise this for long trial-based tasks (e.g. 20).
+  // partial data). There are only six trials, so about 10 writes per participant.
   chunk_size: 1,
 
   // Also store the complete jsPsych dataset on the participant document at the end.
@@ -43,11 +48,9 @@ const EXPERIMENT = {
   // Contact shown in consent and debrief.
   contact_email: "stanfordpsych251@gmail.com",
 
-  // Does this study need a physical keyboard? The demo does (the word task uses F and J).
-  // On a phone or tablet no keyboard appears, so a participant cannot answer those trials;
-  // they would time out silently and the session would still look complete. When true, such
-  // devices are turned away before consent. Set to false if your study is buttons/touch only.
-  requires_keyboard: true,
+  // This study is answered entirely with buttons and clicks, so no physical keyboard is
+  // needed and phones and tablets are allowed.
+  requires_keyboard: false,
 };
 
 // True on anything with a mouse, trackpad, or stylus, including laptops with touchscreens.
@@ -144,9 +147,13 @@ if (USE_EMULATOR && URL_PARAMS.get("cc")) EXPERIMENT.prolific_completion_code = 
   });
 
   // Random assignment to a between-subjects condition, recorded on every trial and on the
-  // participant document. (For exact counterbalancing you would need a server; random
+  // participant document. (For exact 50/50 balance you would need a server; random
   // assignment is fine at course sample sizes.)
-  const condition = jsPsych.randomization.sampleWithoutReplacement(["gain", "loss"], 1)[0];
+  const CONDITIONS = ["ai", "human"];
+  // Test-only: `?condition=ai|human` fixes the assignment during emulator runs so the test
+  // suite can check both labels. Ignored in live runs, where assignment is always random.
+  const forced = USE_EMULATOR && CONDITIONS.includes(URL_PARAMS.get("condition")) ? URL_PARAMS.get("condition") : null;
+  const condition = forced || jsPsych.randomization.sampleWithoutReplacement(CONDITIONS, 1)[0];
   jsPsych.data.addProperties({ condition: condition });
   saver.updateParticipant({ condition: condition });
 
@@ -179,23 +186,160 @@ if (USE_EMULATOR && URL_PARAMS.get("cc")) EXPERIMENT.prolific_completion_code = 
   };
 
   // -------------------------------------------------------------------------
-  // 2. Instructions
+  // 2. Instructions (DRAFT wording: edit to taste)
   // -------------------------------------------------------------------------
   const instructions = {
     type: jsPsychInstructions,
     pages: [
       `<h2>Welcome</h2>
-       <p>This short study has three parts: a few questions about you, one decision problem,
-       and a quick word task. It takes about three minutes.</p>`,
-      `<p>Please complete the study in one sitting, in a quiet place, on a laptop or desktop
-       computer. Use the buttons or the arrow keys to move between pages.</p>`,
+       <p>In this short study you will read a description of a situation and a response to it.
+       You will then answer some questions about your impressions of the response. It takes
+       about five minutes.</p>`,
+      `<p>Please imagine yourself in the situation described, and imagine that you described
+       it to the responder, who then wrote the response you will read. Please complete the study
+       in one sitting. Use the buttons to move between pages.</p>`,
     ],
     show_clickable_nav: true,
     data: { task: "instructions" },
   };
 
   // -------------------------------------------------------------------------
-  // 3. Demographics (survey plugin: one page, several question types)
+  // 3. Situation, label, response and the outcome ratings (one page)
+  // -------------------------------------------------------------------------
+  const SITUATION =
+    "Imagine that you have been working very hard on an important project at work. You spent " +
+    "several weeks preparing it and believed you had done a good job. You were hoping that " +
+    "doing well on the project would help you be considered for a new opportunity at work. " +
+    "Today, your manager told you that although your work was appreciated, someone else had " +
+    "been selected for the opportunity. You feel disappointed because you put a lot of effort " +
+    "into the project and had been looking forward to taking on more responsibility. You are " +
+    "also unsure what this means for your future at the organization.";
+  const RESPONSE =
+    "It sounds like this was really disappointing, especially after you put so much time and " +
+    "effort into the project and were hoping it would lead to a new opportunity. It makes " +
+    "sense that you would feel discouraged and uncertain about what this means for your " +
+    "future. You clearly cared a lot about doing well, so hearing that someone else was " +
+    "selected could make the outcome feel especially difficult.";
+  // The label manipulation: the only thing that differs between conditions.
+  const LABEL_SENTENCE = {
+    ai: "The following response was generated by an AI system.",
+    human: "The following response was written by another participant.",
+  };
+  // The two responder-understanding items name the responder, as in the original.
+  const RESPONDER = { ai: "The AI system", human: "The other participant" };
+
+  // Items from the SI Appendix, Part 3 (pp. 18-19), in the order listed there. `scale` names
+  // the measure each item belongs to; the key is the data field.
+  const RATING_ITEMS = [
+    { value: "fh_understood", scale: "fh", text: "Reading this response makes me feel understood." },
+    { value: "fh_validated", scale: "fh", text: "Reading this response makes me feel validated." },
+    { value: "fh_affirmed", scale: "fh", text: "Reading this response makes me feel affirmed." },
+    { value: "fh_seen", scale: "fh", text: "Reading this response makes me feel seen." },
+    { value: "fh_accepted", scale: "fh", text: "Reading this response makes me feel accepted." },
+    { value: "fh_cared_for", scale: "fh", text: "Reading this response makes me feel cared for." },
+    { value: "acc_captures", scale: "acc", text: "The response accurately captures what I mean." },
+    { value: "acc_summarizes", scale: "acc", text: "The response correctly summarizes what I said." },
+    { value: "und_knew", scale: "und", text: RESPONDER[condition] + " knew exactly what I meant." },
+    { value: "und_understood", scale: "und", text: RESPONDER[condition] + " understood what I was thinking and feeling." },
+  ];
+  const AGREE_LABELS = [
+    "Strongly disagree", "Disagree", "Somewhat disagree", "Neither disagree nor agree",
+    "Somewhat agree", "Agree", "Strongly agree",
+  ];
+
+  // Mean of the named items, or null unless every one was answered.
+  function scaleMean(answers, scale) {
+    const vals = RATING_ITEMS.filter((it) => it.scale === scale).map((it) => Number(answers[it.value]));
+    const complete = vals.length > 0 && vals.every((v) => Number.isFinite(v) && v >= 1 && v <= 7);
+    return complete ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+  }
+
+  const ratings = {
+    type: jsPsychSurvey,
+    survey_json: {
+      showQuestionNumbers: "off",
+      completeText: "Continue",
+      pages: [
+        {
+          elements: [
+            {
+              type: "html",
+              name: "stimulus",
+              html:
+                `<div class="vignette"><p>${SITUATION}</p>` +
+                `<p><strong>${LABEL_SENTENCE[condition]}</strong></p>` +
+                `<blockquote class="fixed-response">${RESPONSE}</blockquote>` +
+                `<p>We are interested in how you think of the response above. Please indicate the ` +
+                `extent to which you agree with the following statements.</p></div>`,
+            },
+            {
+              // Nothing is required: the consent says any question may be declined.
+              type: "matrix",
+              name: "agreement",
+              titleLocation: "hidden",
+              rowTitleWidth: "200px",
+              columnMinWidth: "60px",
+              columns: AGREE_LABELS.map((text, i) => ({ value: i + 1, text })),
+              rows: RATING_ITEMS.map((it) => ({ value: it.value, text: it.text })),
+            },
+          ],
+        },
+      ],
+    },
+    data: {
+      task: "ratings",
+      stimulus_id: "work_disappointment_v1",
+      label_sentence: LABEL_SENTENCE[condition],
+      responder_noun: RESPONDER[condition],
+      item_order: RATING_ITEMS.map((it) => it.value).join(","),
+    },
+    on_finish: (data) => {
+      const answers = (data.response && data.response.agreement) || {};
+      for (const it of RATING_ITEMS) {
+        data[it.value] = answers[it.value] === undefined ? null : Number(answers[it.value]);
+      }
+      data.feeling_heard = scaleMean(answers, "fh");
+      data.response_accuracy = scaleMean(answers, "acc");
+      data.responder_understood = scaleMean(answers, "und");
+    },
+  };
+
+  // -------------------------------------------------------------------------
+  // 4. Manipulation check (SI Appendix, p. 22), after every outcome measure
+  // -------------------------------------------------------------------------
+  const SUSPICION_PROMPT = {
+    ai: "When reporting your impressions of the response, how much did you suspect that the " +
+        "response you received was actually from another human participant rather than from an AI system?",
+    human: "When reporting your impressions of the response, how much did you suspect that the " +
+        "response you received was actually from an AI chatbot rather than from another human participant?",
+  };
+  const suspicion = {
+    type: jsPsychSurvey,
+    survey_json: {
+      showQuestionNumbers: "off",
+      completeText: "Continue",
+      pages: [
+        {
+          elements: [
+            {
+              type: "rating", name: "suspicion", title: SUSPICION_PROMPT[condition],
+              rateValues: [1, 2, 3, 4, 5, 6, 7],
+              minRateDescription: "Not at all", maxRateDescription: "Very much",
+            },
+          ],
+        },
+      ],
+    },
+    data: { task: "suspicion" },
+    on_finish: (data) => {
+      const v = data.response && data.response.suspicion;
+      data.suspicion = v === undefined ? null : Number(v);
+    },
+  };
+
+  // -------------------------------------------------------------------------
+  // 5. Demographics: the categories the paper reports (Methods, "Participants", p. 8).
+  //    The paper does not give the question wording or the full option lists.
   // -------------------------------------------------------------------------
   const demographics = {
     type: jsPsychSurvey,
@@ -205,12 +349,21 @@ if (USE_EMULATOR && URL_PARAMS.get("cc")) EXPERIMENT.prolific_completion_code = 
       pages: [
         {
           elements: [
-            // The consent text promises participants may decline any question, so nothing here is required.
+            // Nothing is required: the consent says any question may be declined.
             { type: "text", name: "age", title: "How old are you?", inputType: "number", min: 18, max: 120 },
             {
               type: "radiogroup", name: "gender", title: "What is your gender?",
-              choices: ["Woman", "Man", "Non-binary"], showOtherItem: true, showNoneItem: true, noneText: "Prefer not to say",
+              choices: ["Woman", "Man", "Non-binary"], showNoneItem: true, noneText: "Prefer not to say",
             },
+            {
+              type: "radiogroup", name: "race", title: "Which of the following best describes your race or ethnicity?",
+              choices: ["Black", "Asian", "White", "Hispanic", "Native American", "Mixed race"],
+              showOtherItem: true, otherText: "Other (please specify)",
+              showNoneItem: true, noneText: "Prefer not to say",
+            },
+            // The paper recruited US residents with English as their native language
+            // (prescreened on Prolific). These two items let the data confirm that.
+            { type: "boolean", name: "lives_in_us", title: "Do you currently live in the United States?", labelTrue: "Yes", labelFalse: "No" },
             { type: "boolean", name: "native_english", title: "Is English your first language?", labelTrue: "Yes", labelFalse: "No" },
           ],
         },
@@ -220,118 +373,21 @@ if (USE_EMULATOR && URL_PARAMS.get("cc")) EXPERIMENT.prolific_completion_code = 
   };
 
   // -------------------------------------------------------------------------
-  // 4. Framing problem (between-subjects: gain vs loss frame)
-  // -------------------------------------------------------------------------
-  const framingText = {
-    gain: {
-      a: "If Program A is adopted, 200 people will be saved.",
-      b: "If Program B is adopted, there is a one-third probability that 600 people will be saved, and a two-thirds probability that no people will be saved.",
-    },
-    loss: {
-      a: "If Program A is adopted, 400 people will die.",
-      b: "If Program B is adopted, there is a one-third probability that nobody will die, and a two-thirds probability that 600 people will die.",
-    },
-  };
-  const framing = {
-    type: jsPsychHtmlButtonResponse,
-    stimulus: () => `
-      <div class="framing">
-        <p>Imagine that the country is preparing for the outbreak of an unusual disease, which is
-        expected to kill 600 people. Two alternative programs to combat the disease have been
-        proposed. Assume that the exact scientific estimates of the consequences of the programs
-        are as follows:</p>
-        <ul class="programs">
-          <li>${framingText[condition].a}</li>
-          <li>${framingText[condition].b}</li>
-        </ul>
-        <p>Which of the two programs would you favor?</p>
-      </div>`,
-    choices: ["Program A", "Program B"],
-    data: { task: "framing" },
-    on_finish: (data) => {
-      // Program A is the certain option in both frames; B is the risky gamble.
-      data.choice = data.response === 0 ? "certain" : "risky";
-    },
-  };
-
-  // -------------------------------------------------------------------------
-  // 5. Lexical decision (short RT block with trial-level logging)
-  // -------------------------------------------------------------------------
-  const ldInstructions = {
-    type: jsPsychInstructions,
-    pages: [
-      `<h2>Word task</h2>
-       <p>You will see a string of letters. Press <strong>F</strong> if it is a real English word
-       and <strong>J</strong> if it is not. Respond as quickly and accurately as you can.
-       Place your fingers on F and J now.</p>`,
-    ],
-    show_clickable_nav: true,
-    data: { task: "instructions" },
-  };
-  const ldItems = [
-    { word: "TABLE", is_word: true }, { word: "GARDEN", is_word: true },
-    { word: "PLANET", is_word: true }, { word: "SILVER", is_word: true },
-    { word: "FLIRP", is_word: false }, { word: "MANTOR", is_word: false },
-    { word: "BRENDLE", is_word: false }, { word: "TOSKIN", is_word: false },
-  ];
-  const fixation = {
-    type: jsPsychHtmlKeyboardResponse,
-    stimulus: '<div class="fixation">+</div>',
-    choices: "NO_KEYS",
-    trial_duration: 500,
-    data: { task: "fixation" },
-  };
-  const ldTrial = {
-    type: jsPsychHtmlKeyboardResponse,
-    stimulus: () => `<div class="stimulus">${jsPsych.evaluateTimelineVariable("word")}</div>`,
-    choices: ["f", "j"],
-    trial_duration: 3000,
-    data: {
-      task: "lexical_decision",
-      word: jsPsych.timelineVariable("word"),
-      is_word: jsPsych.timelineVariable("is_word"),
-    },
-    on_finish: (data) => {
-      const expected = data.is_word ? "f" : "j";
-      data.correct = data.response === expected;
-      data.timed_out = data.response === null;
-    },
-  };
-  const lexicalDecision = {
-    timeline: [fixation, ldTrial],
-    timeline_variables: ldItems,
-    randomize_order: true,
-  };
-
-  // -------------------------------------------------------------------------
-  // 6. Feedback
-  // -------------------------------------------------------------------------
-  const feedback = {
-    type: jsPsychSurveyLikert,
-    questions: [
-      {
-        prompt: "How clear were the instructions?", name: "instructions_clear", required: false,
-        labels: ["Very unclear", "Unclear", "Neutral", "Clear", "Very clear"],
-      },
-    ],
-    data: { task: "feedback_likert" },
-  };
-  const comments = {
-    type: jsPsychSurveyText,
-    questions: [{ prompt: "Any comments about the study? (optional)", name: "comments", rows: 4 }],
-    data: { task: "feedback_text" },
-  };
-
-  // -------------------------------------------------------------------------
-  // 7. Debrief
+  // 6. Debrief (DRAFT wording: edit to taste; it must say both labels were untrue)
   // -------------------------------------------------------------------------
   const debrief = {
     type: jsPsychHtmlButtonResponse,
     stimulus: `
       <h2>Debrief</h2>
-      <p>Thank you. In this study we tested whether describing the same outcomes as lives saved or
-      as lives lost changes which program people choose. Different participants saw different
-      wordings. If you have questions about this research, contact
+      <p>Thank you for taking part. In this study we asked whether people feel more or less
+      heard by a response depending on whether they are told it was generated by an AI system or
+      written by another person.</p>
+      <p>Everyone read the same situation and the same response. The response was written by the
+      researchers. It was <strong>not</strong> generated by an AI system and it was <strong>not</strong>
+      written by another participant; the label you saw was the only thing that differed between
+      participants, and we did not tell you this earlier because doing so would have changed how
+      you responded.</p>
+      <p>If you have questions about this research, contact
       <a href="mailto:${EXPERIMENT.contact_email}">${EXPERIMENT.contact_email}</a>.
       Press the button to save your responses and finish.</p>`,
     choices: ["Finish"],
@@ -341,12 +397,9 @@ if (USE_EMULATOR && URL_PARAMS.get("cc")) EXPERIMENT.prolific_completion_code = 
   await jsPsych.run([
     consent,
     instructions,
+    ratings,
+    suspicion,
     demographics,
-    framing,
-    ldInstructions,
-    lexicalDecision,
-    feedback,
-    comments,
     debrief,
   ]);
 })();

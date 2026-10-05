@@ -57,23 +57,20 @@ experiment_id_phase2 <- "yin2024-label-phase2"
 #| label: original-study
 #| include: false
 # The original study's numbers, entered once and used by the power analysis, the Key
-# statistics table, and the side-by-side figures.
+# statistics table, and the side-by-side figures. Replace these with your original study's
+# values, and say in a comment exactly where in the paper each one comes from.
 #
-# Yin, Jia & Wakslak (2024), main experiment: the AI-label effect on Feeling Heard.
-# Table 1 (p. 3), "Feeling heard", means over the response manipulation:
-#   AI label     M = 5.13, SD = 1.46
-#   Human label  M = 5.81, SD = 1.30
-#   Delta (AI - human label) = -0.68, F(1, 451) = 30.31, p < .001, eta^2 = .063
-# N = 455 analysed (Methods, "Participants", p. 8).
-# Cell ns by label are NOT reported in the paper: the split below is an even approximation
-# (228 / 227). Replace with the exact ns from the OSF data (https://osf.io/8wnmr) before
-# finalizing; the original's interval and the power table depend on them slightly.
+# Tversky & Kahneman (1981), Problem 1 (gain frame, N = 152): 72% chose the certain program,
+# 28% the risky one. Problem 2 (loss frame, N = 155): 22% certain, 78% risky. The paper
+# reports percentages, so the counts below are reconstructed from them.
 original <- tibble(
-  condition = c("ai", "human"),
-  n         = c(228, 227),
-  mean      = c(5.13, 5.81),
-  sd        = c(1.46, 1.30)
+  condition = c("gain", "loss"),
+  n         = c(152, 155),
+  risky     = round(c(0.28 * 152, 0.78 * 155))
 )
+
+original_p_gain <- original$risky[original$condition == "gain"] / original$n[original$condition == "gain"]
+original_p_loss <- original$risky[original$condition == "loss"] / original$n[original$condition == "loss"]
 ```
 
 ::: {.callout-note appearance="simple" icon=false}

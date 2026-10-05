@@ -1,5 +1,5 @@
 /* Experiment-specific styles. jsPsych's defaults are in lib/jspsych.css. */
-.jspsych-content { max-width: 720px; text-align: left; }
+.jspsych-content { max-width: 960px; width: 95%; text-align: left; }
 .jspsych-content h1, .jspsych-content h2 { text-align: center; }
 .consent { font-size: 15px; line-height: 1.5; }
 .consent .buttons { text-align: center; }
@@ -9,3 +9,12 @@
 .framing .programs { margin: 1em 0; padding-left: 1.2em; }
 #jspsych-html-button-response-btngroup { text-align: center; }
 .thanks { text-align: center; }
+.vignette { font-size: 17px; line-height: 1.6; }
+.vignette .fixed-response { margin: 1em 0 1em 1.5em; padding-left: 1em; border-left: 3px solid #bbb; }
+/* Seven labelled response columns plus the item text must fit without sideways scrolling. */
+.sd-matrix .sd-table { table-layout: fixed; width: 100%; }
+.sd-matrix .sd-table th, .sd-matrix .sd-table td { padding-left: 4px; padding-right: 4px; }
+.sd-matrix .sd-table th { font-size: 14px; text-align: center; overflow-wrap: normal; word-break: normal; }
+.sd-matrix .sd-table th:first-child, .sd-matrix .sd-table td:first-child { width: 28%; }
+.sd-matrix .sd-table th:not(:first-child), .sd-matrix .sd-table td:not(:first-child) { width: 10.3%; }
+.sd-matrix .sd-radio__decorator { border: 1px solid #888; }
