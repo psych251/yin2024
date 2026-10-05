@@ -1,6 +1,6 @@
 ---
-title: "Replication of Problems 1 and 2 of Tversky & Kahneman (1981, *Science*)"
-author: "Your Name (your.email@stanford.edu)"
+title: "Replication of the AI Label Effect of Yin et al. (2024, *PNAS*)"
+author: "Yutong Zhang (yutongz7@stanford.edu)"
 date: today
 date-format: long
 format:
@@ -49,63 +49,47 @@ library(jsonlite)
 
 # Must match EXPERIMENT.id in experiment.js, and the --experiment you passed to the export.
 # Phase 2 runs under its own id, so its data never mix with Phase 1's.
-experiment_id        <- "framing-demo"
-experiment_id_phase2 <- "framing-demo-phase2"
+experiment_id        <- "yin2024-label-pilot-a"
+experiment_id_phase2 <- "yin2024-label-phase2"
 ```
 
 ```{r}
 #| label: original-study
 #| include: false
 # The original study's numbers, entered once and used by the power analysis, the Key
-# statistics table, and the side-by-side figures. Replace these with your original study's
-# values, and say in a comment exactly where in the paper each one comes from.
+# statistics table, and the side-by-side figures.
 #
-# Tversky & Kahneman (1981), Problem 1 (gain frame, N = 152): 72% chose the certain program,
-# 28% the risky one. Problem 2 (loss frame, N = 155): 22% certain, 78% risky. The paper
-# reports percentages, so the counts below are reconstructed from them.
+# Yin, Jia & Wakslak (2024), main experiment: the AI-label effect on Feeling Heard.
+# Table 1 (p. 3), "Feeling heard", means over the response manipulation:
+#   AI label     M = 5.13, SD = 1.46
+#   Human label  M = 5.81, SD = 1.30
+#   Delta (AI - human label) = -0.68, F(1, 451) = 30.31, p < .001, eta^2 = .063
+# N = 455 analysed (Methods, "Participants", p. 8).
+# Cell ns by label are NOT reported in the paper: the split below is an even approximation
+# (228 / 227). Replace with the exact ns from the OSF data (https://osf.io/8wnmr) before
+# finalizing; the original's interval and the power table depend on them slightly.
 original <- tibble(
-  condition = c("gain", "loss"),
-  n         = c(152, 155),
-  risky     = round(c(0.28 * 152, 0.78 * 155))
+  condition = c("ai", "human"),
+  n         = c(228, 227),
+  mean      = c(5.13, 5.81),
+  sd        = c(1.46, 1.30)
 )
-original_p_gain <- original$risky[original$condition == "gain"] / original$n[original$condition == "gain"]
-original_p_loss <- original$risky[original$condition == "loss"] / original$n[original$condition == "loss"]
 ```
 
 ::: {.callout-note appearance="simple" icon=false}
 ## Project links
 
-- **Original paper:** Tversky, A., & Kahneman, D. (1981). The framing of decisions and the
-  psychology of choice. *Science, 211*(4481), 453–458. <https://doi.org/10.1126/science.7455683>
+- **Original paper:** Yin, Y., Jia, N., & Wakslak, C. J. (2024). AI can help people feel heard, but an AI label diminishes this impact. *Proceedings of the National Academy of Sciences, 121*(14), e2319112121. <https://doi.org/10.1073/pnas.2319112121>
 - **Preregistration:** [OSF registration](https://osf.io/XXXXX) *(registered YYYY-MM-DD, before final data collection)*
-- **Live experiment:** <https://psych251.github.io/your-repo/> (take the study exactly as participants did)
-- **Repository:** <https://github.com/psych251/your-repo> (experiment code, data, and this report)
+- **Live experiment:** <https://psych251.github.io/yin2024/> (take the study exactly as participants did)
+- **Repository:** <https://github.com/psych251/yin2024> (experiment code, data, and this report)
 :::
 
 # AI use statement
 
-::: {.callout-tip icon=false}
-## Guidance
-
-This statement comes first so a reader knows how the work was produced before reading it. Keep
-it current from the start of the project rather than reconstructing it at the end.
-
-**Course policy: you write all of the text in this report yourself.** AI tools may help with
-code, and may comment on drafts you have written, but they may not write, rewrite or paraphrase
-any of the report's text. That includes "polishing" a paragraph.
-
-List every AI tool you used on this project, what you used it for, and how you checked what it
-produced. Include coding assistants (for example Claude Code, Codex, Copilot) and chat
-assistants. Name the model and version where you know it. "How you checked" is the important
-column: say what you verified yourself, not that the output "looked right". If you used no AI
-tools, replace the table with a sentence saying so.
-:::
-
 | Tool and model | What it was used for | How you checked the output |
 |---|---|---|
-| *e.g., Claude Code (Claude Opus 5)* | *Implemented the experiment from the original Methods section* | *Ran the automated tests; took the study myself; compared every screen with the original materials* |
-| *e.g., Claude Code (Claude Opus 5)* | *Drafted the analysis code* | *Checked the exclusion counts by hand; confirmed the key test matches the preregistration* |
-| *e.g., ChatGPT* | *Comments on my draft of the Introduction (no text generated)* | *Decided which comments to act on and made every change myself; checked any factual claim against the source* |
+| Claude Code (claude-sonnet-5-5)* | *Review and understand the existing codebase and project setup.* | Not applied as no output generated.
 
 I wrote all of the text in this report myself. AI tools were not used to write, rewrite or
 paraphrase it, and were not used to generate, alter, or impute any participant data. I take full
@@ -127,7 +111,6 @@ adapt its code and say so in the caption.
 ```{r}
 #| label: analysis-functions
 #| code-summary: "Show the analysis code (shared by Phase 1 and Phase 2)"
-
 # Load one phase's exported data and apply the exclusion rule. Returns NULL if that phase
 # has not been exported yet, which is how every section below knows to skip itself.
 read_phase <- function(id) {
@@ -138,68 +121,85 @@ read_phase <- function(id) {
   errors_path  <- file.path(dir, "errors.csv")
   errors <- if (file.exists(errors_path)) read_csv(errors_path, show_col_types = FALSE) else tibble()
 
+  # A participant who stopped before a screen has no row, hence no column, for its fields.
+  for (col in c("consented", "condition", "feeling_heard", "response_accuracy",
+                "responder_understood", "suspicion")) {
+    if (!col %in% names(trials)) trials[[col]] <- NA
+  }
+
   complete <- participants |> filter(completed)
 
-  # Exclusion rule: replace with the rule you preregistered. Here: at least 6 of 8
-  # lexical-decision trials correct, and at least one speeded response at all (a session in
-  # which every speeded trial timed out is what a device without a keyboard produces).
-  ld <- trials |>
-    filter(task == "lexical_decision") |>
-    group_by(participant_id) |>
-    summarise(ld_acc           = mean(as.logical(correct), na.rm = TRUE),
-              ld_all_timed_out = all(as.logical(timed_out)),
-              .groups = "drop")
-  checked <- complete |> left_join(ld, by = "participant_id")
-  keep <- checked |> filter(!is.na(ld_acc), !ld_all_timed_out, ld_acc >= 0.75)
+  # Exclusion rule: the participant consented and has a computable Feeling Heard score (all
+  # six items answered). Nothing else is excluded: no attention, response-time or
+  # manipulation-check exclusions, and no disclosure-length or responder-AI-use rule (those
+  # belong to the original's design and do not apply here).
+  consented <- trials |>
+    filter(task == "consent", as.logical(consented)) |>
+    distinct(participant_id)
+  scores <- trials |>
+    filter(task == "ratings") |>
+    transmute(participant_id, condition,
+              feeling_heard        = as.numeric(feeling_heard),
+              response_accuracy    = as.numeric(response_accuracy),
+              responder_understood = as.numeric(responder_understood))
+  checked <- complete |>
+    semi_join(consented, by = "participant_id") |>
+    left_join(select(scores, participant_id, feeling_heard), by = "participant_id")
+  keep <- checked |> filter(!is.na(feeling_heard)) |> select(-feeling_heard)
 
   list(participants = participants, trials = trials, errors = errors,
        complete = complete, keep = keep,
-       n_no_response = sum(checked$ld_all_timed_out %in% TRUE))
+       scores = scores |> filter(participant_id %in% keep$participant_id),
+       n_no_score = sum(is.na(checked$feeling_heard)))
 }
 
-# The key comparison's raw counts: how many analysed participants chose the risky program
-# in each frame.
-risky_counts <- function(d) {
-  d$trials |>
-    filter(task == "framing", participant_id %in% d$keep$participant_id) |>
+# One row per label condition for the analysed participants: n, mean and SD of a measure.
+label_summary <- function(d, var = "feeling_heard") {
+  d$scores |>
     group_by(condition) |>
-    summarise(risky = sum(choice == "risky"), n = n(), .groups = "drop")
+    summarise(n = sum(!is.na(.data[[var]])), mean = mean(.data[[var]], na.rm = TRUE),
+              sd = sd(.data[[var]], na.rm = TRUE), .groups = "drop")
 }
 
-# The key statistic: difference in the proportion choosing the risky program (loss minus
-# gain) with a 95% CI, and the uncorrected chi-square, which is the same test. NULL until
-# both frames have at least one analysed participant.
-diff_ci <- function(counts) {
-  loss <- counts[counts$condition == "loss", ]
-  gain <- counts[counts$condition == "gain", ]
-  if (nrow(loss) == 0 || nrow(gain) == 0) return(NULL)
-  pt <- prop.test(c(loss$risky, gain$risky), c(loss$n, gain$n), correct = FALSE)
-  tibble(N = loss$n + gain$n,
-         estimate = unname(pt$estimate[1] - pt$estimate[2]),
-         ci_low = pt$conf.int[1], ci_high = pt$conf.int[2],
-         statistic = unname(pt$statistic), p = pt$p.value)
+# The key statistic: difference in mean Feeling Heard (AI label minus human label) with a 95%
+# CI from Welch's t test, plus Cohen's d (pooled SD). Works from the per-condition summary,
+# so the original (summary statistics only) and the replication go through the same code.
+# NULL until both labels have at least two analysed participants.
+diff_ci <- function(s) {
+  ai <- s[s$condition == "ai", ]
+  hu <- s[s$condition == "human", ]
+  if (nrow(ai) == 0 || nrow(hu) == 0 || ai$n < 2 || hu$n < 2 || anyNA(c(ai$sd, hu$sd))) return(NULL)
+  v_ai <- ai$sd^2 / ai$n
+  v_hu <- hu$sd^2 / hu$n
+  se   <- sqrt(v_ai + v_hu)
+  df   <- (v_ai + v_hu)^2 / (v_ai^2 / (ai$n - 1) + v_hu^2 / (hu$n - 1))
+  est  <- ai$mean - hu$mean
+  sd_p <- sqrt(((ai$n - 1) * ai$sd^2 + (hu$n - 1) * hu$sd^2) / (ai$n + hu$n - 2))
+  tibble(N = ai$n + hu$n, estimate = est,
+         ci_low = est - qt(.975, df) * se, ci_high = est + qt(.975, df) * se,
+         statistic = est / se, df = df, p = 2 * pt(-abs(est / se), df), d = est / sd_p)
 }
 
-# Side-by-side figure: any number of studies on the same axes, in the order given.
-prop_ci <- function(x, n) {
-  ci <- prop.test(x, n, correct = FALSE)$conf.int
-  tibble(p = x / n, low = ci[1], high = ci[2])
-}
+# Side-by-side figure: any number of studies on the same axes, in the order given. Each
+# argument is a per-condition summary (condition, n, mean, sd).
 comparison_plot <- function(...) {
   studies <- list(...)
   studies <- studies[!map_lgl(studies, ~ is.null(.x) || nrow(.x) == 0)]
   df <- imap_dfr(studies, ~ mutate(.x, Study = .y)) |>
-    rowwise() |> mutate(prop_ci(risky, n)) |> ungroup() |>
-    mutate(Study = factor(Study, levels = names(studies)), label = sprintf("n = %d", n))
+    mutate(half = qt(.975, n - 1) * sd / sqrt(n),
+           Study = factor(Study, levels = names(studies)),
+           label = sprintf("n = %d", n),
+           condition = factor(condition, levels = c("ai", "human"), labels = c("AI label", "Human label")))
   fills <- setNames(c("grey55", "#1E6E76", "#B8792A")[seq_along(studies)], names(studies))
   dodge <- position_dodge(width = 0.8)
-  ggplot(df, aes(x = condition, y = p, fill = Study)) +
+  ggplot(df, aes(x = condition, y = mean, fill = Study)) +
     geom_col(position = dodge, width = 0.75) +
-    geom_errorbar(aes(ymin = low, ymax = high), position = dodge, width = 0.2) +
-    geom_text(aes(y = 0.02, label = label), position = dodge, vjust = 0, size = 3, colour = "white") +
-    scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
+    geom_errorbar(aes(ymin = mean - half, ymax = mean + half), position = dodge, width = 0.2) +
+    geom_text(aes(y = 1.1, label = label), position = dodge, vjust = 0, size = 3, colour = "white") +
+    coord_cartesian(ylim = c(1, 7)) +
+    scale_y_continuous(breaks = 1:7) +
     scale_fill_manual(values = fills) +
-    labs(x = "Frame", y = "Chose the risky program", fill = NULL) +
+    labs(x = "Label", y = "Feeling Heard (1-7)", fill = NULL) +
     theme_minimal(base_size = 12) +
     theme(legend.position = "top")
 }
@@ -215,36 +215,36 @@ have_phase2 <- !is.null(phase2)
 #| echo: false
 fmt_row <- function(study, r) {
   if (is.null(r)) {
-    return(tibble(Study = study, N = "", `Effect (loss − gain)` = "not yet collected",
-                  `95% CI` = "", `χ²(1)` = "", p = ""))
+    return(tibble(Study = study, N = "", `Effect (AI − human label)` = "not yet collected",
+                  `95% CI` = "", `t(df)` = "", d = "", p = ""))
   }
   tibble(Study = study, N = as.character(r$N),
-         `Effect (loss − gain)` = sprintf("%.0f points", 100 * r$estimate),
-         `95% CI` = sprintf("[%.0f, %.0f]", 100 * r$ci_low, 100 * r$ci_high),
-         `χ²(1)` = sprintf("%.2f", r$statistic),
+         `Effect (AI − human label)` = sprintf("%.2f points", r$estimate),
+         `95% CI` = sprintf("[%.2f, %.2f]", r$ci_low, r$ci_high),
+         `t(df)` = sprintf("%.2f (%.0f)", r$statistic, r$df),
+         d = sprintf("%.2f", r$d),
          p = format.pval(r$p, digits = 2, eps = 0.001))
 }
 bind_rows(
   fmt_row("Original", diff_ci(original)),
-  fmt_row("Phase 1: replication", if (have_data) diff_ci(risky_counts(phase1))),
-  fmt_row("Phase 2: extension", if (have_phase2) diff_ci(risky_counts(phase2)))
+  fmt_row("Phase 1: replication", if (have_data) diff_ci(label_summary(phase1))),
+  fmt_row("Phase 2: extension", if (have_phase2) diff_ci(label_summary(phase2)))
 ) |>
-  knitr::kable(align = "lrlllr",
-               caption = "Key comparison: difference in the percentage of analysed participants choosing the risky program, loss frame minus gain frame.")
+  knitr::kable(align = "lrllllr",
+               caption = "Key comparison: Feeling Heard (1-7), AI label minus human label, Welch t test.")
 ```
 
 # Phase 1: Replication
 
 ## Introduction
 
-::: {.callout-tip icon=false}
-## Guidance
+In this project, I replicated the paper "AI can help people feel heard, but an AI label diminishes this impact" by Yin et al. (2024). In the original paper, the researchers found that 1) AI-generated responses made people feel more heard than human-generated responses; 2) however, people felt less heard when they believed that a response came from AI rather than from a human. In this project, I would focus on replicating the second finding to study the AI label effect.
 
-One or two paragraphs, no abstract and no literature review: that is in the original paper.
-Say what the original study found, which specific finding you are replicating, and why it
-matters to you. Write the Introduction and Methods in the past tense, even though you write
-them before collecting data.
-:::
+This study closely fits my research interests because my research mainly focuses on how people interact with AI systems, especially in social and relational contexts. My recent work has focused on the social uses of AI chatbots, and "feeling heard" is closely related to how people use AI systems socially. I am especially interested in the label effect because recently people are increasingly integrating AI systems into their daily lives, at the same time, there is also growing debate about how people perceive the warm and supportive tone of these systems. For example, recent work has raised concerns about behaviors such as sycophancy. This makes me interested in whether simply knowing that a response comes from AI will still remain an important factor shaping people's perceptions.
+
+The original study used a 2 (response source: human vs. AI) × 2 (label: human vs. AI) between-subjects design. Participants first described a complex situation they were dealing with. To answer the first question, participants randomly received responses written by humans or AI (GPT-4). To study the second question, these responses were further randomly labeled as human-generated or AI-generated when they were shown to the original participants. Therefore, this replication study would need to recruit an additional group of participants for human responses and tokens for the Large Language model resource to generate personalized AI responses. Therefore, this study would require a multi-stage design since participants need to return after the responses have been generated, which introduces additional risk of attrition between sessions. An alternative approach would be to only manipulate the response label while generating all the AI responses with a large language model (LLM). 
+
+I’d like to preregister a linear regression comparing "feeling heard" scores between the AI-label and human-label conditions as the key statistical test. Consistent with the findings of the original paper, I hypothesize that participants in the AI-label condition will report feeling less heard than those in the human-label condition. Considering the possible extension, I am also interested in the effects of the model behaviors. The original study only tested with a fixed model and a fixed prompt, so I'd be interested in comparing responses generated by different models and different prompting strategies. For example, I could test whether explicitly prompting a model to respond more like a human changes how participants evaluate the response and has a different AI label effect.
 
 ## Methods
 
@@ -266,19 +266,22 @@ what the course's participant budget allowed.
 
 ```{r}
 #| label: power
+orig_stats <- diff_ci(original)
+sd_pooled  <- sqrt(sum((original$n - 1) * original$sd^2) / (sum(original$n) - 2))
+original_effect <- orig_stats$estimate
+
 power_rows <- map_dfr(c(0.80, 0.90, 0.95), function(pw) {
-  n <- power.prop.test(p1 = original_p_gain, p2 = original_p_loss,
-                       power = pw, sig.level = 0.05)$n
+  n <- power.t.test(delta = abs(original_effect), sd = sd_pooled,
+                    power = pw, sig.level = 0.05)$n
   tibble(power = scales::percent(pw), n_per_group = ceiling(n), n_total = 2 * ceiling(n))
 })
 
-original_effect <- original_p_loss - original_p_gain
 two_and_half <- ceiling(2.5 * original$n)
 
-knitr::kable(power_rows, col.names = c("Power", "N per frame", "N total"),
+knitr::kable(power_rows, col.names = c("Power", "N per label condition", "N total"),
              caption = sprintf(
-               "Sample needed to detect the original effect (risky choice: %.0f%% gain vs %.0f%% loss, a difference of %.0f points), two-sided alpha = .05.",
-               100 * original_p_gain, 100 * original_p_loss, 100 * original_effect))
+               "Sample needed to detect the original effect (Feeling Heard, AI label minus human label = %.2f points, pooled SD = %.2f), two-sided alpha = .05.",
+               original_effect, sd_pooled))
 ```
 
 For comparison, 2.5 times the original sample would be `r two_and_half[1]` in the gain frame
@@ -397,7 +400,7 @@ trials        <- phase1$trials
 errors        <- phase1$errors
 complete      <- phase1$complete
 keep          <- phase1$keep
-n_no_response <- phase1$n_no_response
+n_no_score   <- phase1$n_no_score
 ```
 
 ```{r}
@@ -414,7 +417,7 @@ bind_rows(
   pivot_wider(names_from = condition, values_from = n, values_fill = 0) |>
   mutate(Total = rowSums(across(-step))) |>
   rename(Step = step) |>
-  knitr::kable(caption = "Participants at each step, by frame. Differences between frames in attrition or exclusion are a threat to validity and should be discussed.")
+  knitr::kable(caption = "Participants at each step, by label condition. Differences between labels in attrition or exclusion are a threat to validity and should be discussed.")
 ```
 
 ```{r}
@@ -424,9 +427,9 @@ bind_rows(
 #| results: asis
 cat(sprintf("Of %d participants who started, %d completed the study and %d met the exclusion criteria.",
             nrow(participants), nrow(complete), nrow(keep)))
-if (n_no_response > 0) {
-  cat(sprintf(" %d completed session(s) contained no response to any speeded trial and were excluded on that basis.",
-              n_no_response))
+if (n_no_score > 0) {
+  cat(sprintf(" %d consenting participant(s) had no computable Feeling Heard score and were excluded on that basis.",
+              n_no_score))
 }
 if (nrow(keep) == 0) cat(" No participants remain for analysis yet, so the results below are empty.")
 cat("\n")
@@ -435,21 +438,51 @@ cat("\n")
 ```{r}
 #| label: demographics
 #| eval: !expr have_data
+# The categories and counts below are from Yin et al. (2024), Methods, "Participants" (p. 8),
+# for the 455 recipients: gender 227 women, 6 non-binary, 1 did not report (so 221 men, by
+# subtraction); race/ethnicity 343 White, 55 Black, 26 mixed race, 15 Asian, 11 Hispanic,
+# 3 other, 1 Native American, 1 did not report; mean age 43.82 (SD 13.12).
+paper_gender <- tibble(category = c("Woman", "Man", "Non-binary", "Prefer not to say"),
+                       paper_n  = c(227, 221, 6, 1))
+paper_race   <- tibble(category = c("White", "Black", "Asian", "Hispanic", "Native American",
+                                    "Mixed race", "Other", "Prefer not to say"),
+                       paper_n  = c(343, 55, 15, 11, 1, 26, 3, 1))
+
 demo <- trials |>
   filter(task == "demographics", participant_id %in% keep$participant_id) |>
   mutate(resp = map(response, ~ fromJSON(.x))) |>
   transmute(
     participant_id,
     age    = map_dbl(resp, ~ as.numeric(.x$age %||% NA)),
-    gender = map_chr(resp, ~ as.character(.x$gender %||% NA))
+    gender = map_chr(resp, ~ as.character(.x$gender %||% NA)),
+    race   = map_chr(resp, ~ as.character(.x$race %||% NA))
   )
+
+# SurveyJS stores "Prefer not to say" as "none" and the "Other" option as "other".
+tabulate_category <- function(values, paper) {
+  recoded <- case_when(values == "none" ~ "Prefer not to say", values == "other" ~ "Other",
+                       is.na(values) ~ "Not answered", TRUE ~ values)
+  tibble(category = recoded) |>
+    count(category, name = "this_study") |>
+    full_join(paper, by = "category") |>
+    mutate(across(c(this_study, paper_n), ~ replace_na(.x, 0)),
+           category = factor(category, levels = c(paper$category, "Not answered"))) |>
+    arrange(category)
+}
 
 if (nrow(demo) > 0) {
   demo |>
-    summarise(N = n(), `Mean age` = round(mean(age, na.rm = TRUE), 1),
-              `SD age` = round(sd(age, na.rm = TRUE), 1),
-              `Age not given` = sum(is.na(age))) |>
-    knitr::kable(caption = "Age of the analysed sample.")
+    summarise(N = n(), `Mean age` = round(mean(age, na.rm = TRUE), 2),
+              `SD age` = round(sd(age, na.rm = TRUE), 2),
+              `Age not given` = sum(is.na(age)),
+              `Original mean age` = 43.82, `Original SD age` = 13.12) |>
+    knitr::kable(caption = "Age of the analysed sample, with the original's values.")
+  tabulate_category(demo$gender, paper_gender) |>
+    knitr::kable(col.names = c("Gender", "This study", "Original (N = 455)"),
+                 caption = "Gender of the analysed sample and the original's counts.")
+  tabulate_category(demo$race, paper_race) |>
+    knitr::kable(col.names = c("Race / ethnicity", "This study", "Original (N = 455)"),
+                 caption = "Race / ethnicity of the analysed sample and the original's counts.")
 }
 ```
 
@@ -479,21 +512,17 @@ the data beyond that.
 ```{r}
 #| label: confirmatory
 #| eval: !expr have_data
-framing <- trials |>
-  filter(task == "framing", participant_id %in% keep$participant_id) |>
-  select(participant_id, condition, choice)
-risky <- risky_counts(phase1)
-tab <- table(Frame = framing$condition, Choice = framing$choice)
+scores <- phase1$scores |> filter(!is.na(feeling_heard))
 
-if (all(dim(tab) == c(2, 2))) {
-  # No continuity correction, so this test and the effect-size interval below agree: the
-  # uncorrected 2 x 2 chi-square is the same test as the two-proportion comparison.
-  print(tab)
-  print(chisq.test(tab, correct = FALSE))
+if (all(c("ai", "human") %in% scores$condition) && all(table(scores$condition) >= 2)) {
+  # Welch's t test on the Feeling Heard composite; the first group listed is the AI label.
+  print(t.test(feeling_heard ~ condition, data = scores))
+  label_summary(phase1) |>
+    mutate(across(c(mean, sd), ~ round(.x, 2))) |>
+    knitr::kable(caption = "Feeling Heard (1-7) by label condition, analysed participants.")
 } else {
-  message("Chi-square not run: the frame-by-choice table is ", paste(dim(tab), collapse = " x "),
-          ". It needs both frames and both choices; with ", nrow(framing),
-          " participant(s) in the analysis set this is expected.")
+  message("Welch t test not run: it needs at least two analysed participants in each label condition; ",
+          "there are ", nrow(scores), " analysed participant(s) so far.")
 }
 ```
 
@@ -513,17 +542,18 @@ informative and should be reported as such (Experimentology §3.2).
 #| label: comparison
 #| eval: !expr have_data
 orig <- diff_ci(original)
-rep  <- diff_ci(risky)
+rep  <- diff_ci(label_summary(phase1))
 
 if (!is.null(rep)) {
   bind_rows(orig |> mutate(Study = "Original"), rep |> mutate(Study = "Phase 1: replication")) |>
     transmute(Study, N,
-              `Difference (loss − gain)` = sprintf("%.0f points", 100 * estimate),
-              `95% CI` = sprintf("[%.0f, %.0f]", 100 * ci_low, 100 * ci_high),
+              `Difference (AI − human label)` = sprintf("%.2f points", estimate),
+              `95% CI` = sprintf("[%.2f, %.2f]", ci_low, ci_high),
+              d = sprintf("%.2f", d),
               p = format.pval(p, digits = 2, eps = 0.001)) |>
-    knitr::kable(caption = "Effect size: difference in the percentage choosing the risky program.")
+    knitr::kable(caption = "Effect size: difference in mean Feeling Heard (1-7), AI label minus human label.")
 } else {
-  message("Replication effect size not computed yet: need at least one analysed participant in each frame.")
+  message("Replication effect size not computed yet: need at least two analysed participants in each label condition.")
 }
 ```
 
@@ -536,10 +566,10 @@ if (!is.null(rep)) {
   excludes_zero <- rep$ci_low > 0 | rep$ci_high < 0
   includes_orig <- orig$estimate >= rep$ci_low & orig$estimate <= rep$ci_high
   cat(sprintf(
-    "The replication's 95%% interval %s zero and %s the original estimate of %.0f points. ",
+    "The replication's 95%% interval %s zero and %s the original estimate of %.2f points. ",
     if (excludes_zero) "excludes" else "includes",
     if (includes_orig) "includes" else "does not include",
-    100 * orig$estimate))
+    orig$estimate))
   cat("These two facts are the starting point for the summary in the Discussion, not the conclusion.\n")
 }
 ```
@@ -579,10 +609,10 @@ caption. If the original reported no variability, say so rather than leaving it 
 ```{r}
 #| label: fig-comparison
 #| eval: !expr have_data
-#| fig-cap: "Percentage choosing the risky program in each frame, original study and Phase 1 replication. Error bars are 95% confidence intervals."
+#| fig-cap: "Feeling Heard (1-7) by label condition, original study and Phase 1 replication. Error bars are 95% confidence intervals. The original's cell sizes are approximate."
 #| fig-width: 7
 #| fig-height: 4
-comparison_plot(Original = original, `Phase 1: replication` = risky)
+comparison_plot(Original = original, `Phase 1: replication` = label_summary(phase1))
 ```
 
 ### Exploratory analyses
@@ -595,21 +625,24 @@ they generate hypotheses rather than test them.
 :::
 
 ```{r}
-#| label: exploratory-rt
+#| label: exploratory-secondary
 #| eval: !expr have_data
-ld <- trials |>
-  filter(task == "lexical_decision", participant_id %in% keep$participant_id) |>
-  mutate(correct = as.logical(correct), is_word = as.logical(is_word), rt = as.numeric(rt)) |>
-  filter(correct, !is.na(rt))
+# Secondary measures and the manipulation check (the SI suspicion item), by label condition.
+# These are not part of the confirmatory test and nothing is excluded on them.
+phase1$scores |>
+  pivot_longer(c(response_accuracy, responder_understood), names_to = "Measure", values_to = "value") |>
+  group_by(Measure, Label = condition) |>
+  summarise(n = sum(!is.na(value)), Mean = round(mean(value, na.rm = TRUE), 2),
+            SD = round(sd(value, na.rm = TRUE), 2), .groups = "drop") |>
+  knitr::kable(caption = "Exploratory: secondary measures (1-7) by label condition.")
 
-if (nrow(ld) > 0) {
-  ld |>
-    group_by(`Real word` = is_word) |>
-    summarise(`Mean RT (ms)` = round(mean(rt)), `SD (ms)` = round(sd(rt)), Trials = n(), .groups = "drop") |>
-    knitr::kable(caption = "Exploratory: lexical-decision response times, correct trials only.")
-} else {
-  message("No correct lexical-decision trials with a response time yet.")
-}
+trials |>
+  filter(task == "suspicion", participant_id %in% keep$participant_id) |>
+  mutate(suspicion = as.numeric(suspicion)) |>
+  group_by(Label = condition) |>
+  summarise(n = sum(!is.na(suspicion)), Mean = round(mean(suspicion, na.rm = TRUE), 2),
+            SD = round(sd(suspicion, na.rm = TRUE), 2), .groups = "drop") |>
+  knitr::kable(caption = "Exploratory: suspicion that the response came from the other source (1-7) by label condition.")
 ```
 
 ```{r}
@@ -718,40 +751,40 @@ have it and the original's otherwise.
 
 ```{r}
 #| label: phase2-power
-phase2_n_per_group <- 150   # planned analysed participants per condition in Phase 2
+phase2_n_per_group <- 150   # planned analysed participants per label condition in Phase 2
 
-p1_counts <- if (have_data) risky_counts(phase1)
-p1_stats  <- if (have_data) diff_ci(p1_counts)
+orig_stats <- diff_ci(original)
+p1_summary <- if (have_data) label_summary(phase1)
+p1_stats   <- if (have_data) diff_ci(p1_summary)
 basis <- if (!is.null(p1_stats)) {
-  list(gain = p1_counts$risky[p1_counts$condition == "gain"] / p1_counts$n[p1_counts$condition == "gain"],
-       loss = p1_counts$risky[p1_counts$condition == "loss"] / p1_counts$n[p1_counts$condition == "loss"],
-       source = "Phase 1")
+  list(summary = p1_summary, source = "Phase 1")
 } else {
-  list(gain = original_p_gain, loss = original_p_loss, source = "the original study")
+  list(summary = original, source = "the original study")
 }
+pooled_sd <- function(s) sqrt(sum((s$n - 1) * s$sd^2) / (sum(s$n) - 2))
 
 # Expected 95% CI half-width on the difference at n per condition.
-half_width <- function(n) 1.96 * sqrt(basis$gain * (1 - basis$gain) / n + basis$loss * (1 - basis$loss) / n)
-power_at <- function(n, p1, p2) {
-  tryCatch(power.prop.test(n = n, p1 = p1, p2 = p2, sig.level = 0.05)$power, error = function(e) NA)
+half_width <- function(n) qt(.975, 2 * n - 2) * pooled_sd(basis$summary) * sqrt(2 / n)
+power_at <- function(n, delta, sd) {
+  tryCatch(power.t.test(n = n, delta = delta, sd = sd, sig.level = 0.05)$power, error = function(e) NA)
 }
 
 rows <- tibble(
   Study = c(if (!is.null(p1_stats)) "Phase 1 (actual)", "Phase 2 (planned)"),
   `N analysed` = c(if (!is.null(p1_stats)) p1_stats$N, 2 * phase2_n_per_group),
-  `95% CI half-width` = c(if (!is.null(p1_stats)) sprintf("±%.0f points", 100 * (p1_stats$ci_high - p1_stats$ci_low) / 2),
-                          sprintf("±%.0f points (expected)", 100 * half_width(phase2_n_per_group)))
+  `95% CI half-width` = c(if (!is.null(p1_stats)) sprintf("±%.2f points", (p1_stats$ci_high - p1_stats$ci_low) / 2),
+                          sprintf("±%.2f points (expected)", half_width(phase2_n_per_group)))
 )
 knitr::kable(rows, caption = sprintf("Precision of the key estimate, Phase 2 expected values based on %s.", basis$source))
 
 tibble(
-  `Effect to detect` = c(sprintf("Original: %.0f points", 100 * (original_p_loss - original_p_gain)),
-                         if (!is.null(p1_stats)) sprintf("Phase 1: %.0f points", 100 * p1_stats$estimate),
-                         sprintf("Half the original: %.0f points", 50 * (original_p_loss - original_p_gain))),
+  `Effect to detect` = c(sprintf("Original: %.2f points", abs(orig_stats$estimate)),
+                         if (!is.null(p1_stats)) sprintf("Phase 1: %.2f points", abs(p1_stats$estimate)),
+                         sprintf("Half the original: %.2f points", abs(orig_stats$estimate) / 2)),
   `Power at planned N` = scales::percent(c(
-    power_at(phase2_n_per_group, original_p_gain, original_p_loss),
-    if (!is.null(p1_stats)) power_at(phase2_n_per_group, basis$gain, basis$loss),
-    power_at(phase2_n_per_group, original_p_gain, original_p_gain + (original_p_loss - original_p_gain) / 2)
+    power_at(phase2_n_per_group, abs(orig_stats$estimate), pooled_sd(original)),
+    if (!is.null(p1_stats)) power_at(phase2_n_per_group, abs(p1_stats$estimate), pooled_sd(p1_summary)),
+    power_at(phase2_n_per_group, abs(orig_stats$estimate) / 2, pooled_sd(original))
   ), accuracy = 1)
 ) |>
   knitr::kable(caption = sprintf("Power of the Phase 2 key test at %d per condition, two-sided alpha = .05.", phase2_n_per_group))
@@ -792,27 +825,27 @@ if (!have_phase2) {
 ```{r}
 #| label: phase2-results
 #| eval: !expr have_phase2
-p2_counts <- risky_counts(phase2)
-p2_stats  <- diff_ci(p2_counts)
+p2_summary <- label_summary(phase2)
+p2_stats   <- diff_ci(p2_summary)
 cat(sprintf("Phase 2: %d started, %d completed, %d analysed.\n",
             nrow(phase2$participants), nrow(phase2$complete), nrow(phase2$keep)))
 if (!is.null(p2_stats)) {
   p_text <- if (p2_stats$p < 0.001) "p < .001" else sprintf("p = %.3f", p2_stats$p)
-  cat(sprintf("Key comparison: %.0f points [%.0f, %.0f], chi-square(1) = %.2f, %s.\n",
-              100 * p2_stats$estimate, 100 * p2_stats$ci_low, 100 * p2_stats$ci_high,
-              p2_stats$statistic, p_text))
+  cat(sprintf("Key comparison: %.2f points [%.2f, %.2f], t(%.1f) = %.2f, %s.\n",
+              p2_stats$estimate, p2_stats$ci_low, p2_stats$ci_high,
+              p2_stats$df, p2_stats$statistic, p_text))
 }
 ```
 
 ```{r}
 #| label: fig-phase2
 #| eval: !expr have_phase2
-#| fig-cap: "Percentage choosing the risky program in each frame: original study, Phase 1 replication, and Phase 2 extension. Error bars are 95% confidence intervals."
+#| fig-cap: "Feeling Heard (1-7) by label condition: original study, Phase 1 replication, and Phase 2 extension. Error bars are 95% confidence intervals."
 #| fig-width: 8
 #| fig-height: 4
 comparison_plot(Original = original,
-                `Phase 1: replication` = if (have_data) risky_counts(phase1),
-                `Phase 2: extension` = risky_counts(phase2))
+                `Phase 1: replication` = if (have_data) label_summary(phase1),
+                `Phase 2: extension` = label_summary(phase2))
 ```
 
 ## Discussion
