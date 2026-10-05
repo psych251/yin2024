@@ -89,7 +89,7 @@ original <- tibble(
 
 | Tool and model | What it was used for | How you checked the output |
 |---|---|---|
-| Claude Code (claude-sonnet-5-5)* | *Review and understand the existing codebase and project setup.* | Not applied as no output generated.
+| Claude Code (claude-sonnet-5-5)* | *Review and understand the existing codebase and project setup; test around and setup the experiment code.* | The experiment code is for exploration and not the final version.
 
 I wrote all of the text in this report myself. AI tools were not used to write, rewrite or
 paraphrase it, and were not used to generate, alter, or impute any participant data. I take full
