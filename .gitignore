@@ -52,11 +52,20 @@ original_paper/
 # identifying before committing, exactly as you would the free-text columns.
 identifiers.csv
 
+# Replies log from scripts/generate-replies.js: holds the participants' descriptions and Prolific IDs.
+data/private/
+
+# Session 1 exports hold what participants typed about their own lives (trials.csv, export.json), which
+# is personal text. Keep them out of the public repo; commit a redacted copy deliberately (git add -f)
+# if you decide to share any of it.
+data/raw/*-describe/
+
 # OS / editor
 .DS_Store
 .Rhistory
 .Rproj.user/
 *.Rproj
+.env
 
 # agent worktrees
 .claude/worktrees/

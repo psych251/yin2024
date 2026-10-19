@@ -28,7 +28,9 @@ http
     let urlPath = decodeURIComponent(req.url.split("?")[0]);
     if (urlPath.endsWith("/")) urlPath += "index.html";
     const file = path.normalize(path.join(root, urlPath));
-    if (!file.startsWith(root) || file.includes(`${path.sep}node_modules${path.sep}`)) {
+    // Never serve dotfiles or dot-directories (.env, .git): this server listens on all interfaces.
+    const hidden = path.relative(root, file).split(path.sep).some((part) => part.startsWith("."));
+    if (!file.startsWith(root) || hidden || file.includes(`${path.sep}node_modules${path.sep}`)) {
       res.writeHead(403);
       return res.end("forbidden");
     }

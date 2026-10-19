@@ -5,8 +5,9 @@ rules_version = '2';
 // The whole security model in three lines:
 //   1. Participants are signed in anonymously, so every request carries a uid.
 //   2. A participant may only CREATE documents under their own uid.
-//   3. Nobody can READ anything from the browser. You read your data with
-//      scripts/export.js, which uses the Admin SDK and bypasses these rules.
+//   3. Nobody can READ participant data from the browser. You read your data with
+//      scripts/export.js, which uses the Admin SDK and bypasses these rules. The one exception
+//      is a participant fetching their own Session 2 reply (the `replies` rule below).
 //
 // Do NOT loosen these to `allow read, write: if true` while debugging. Use the
 // emulator (`npm run emulators`) instead; it logs every denied request.
@@ -48,6 +49,15 @@ service cloud.firestore {
         allow create: if isOwner(participantId) && reasonableSize();
         allow read, update, delete: if false;
       }
+    }
+
+    // Session 2 replies, written ONLY by scripts/generate-replies.js (Admin SDK, which bypasses
+    // these rules). A participant reads their own reply with a single `get` on a document named
+    // by a hash of their Prolific ID (so they must know it). Nobody can list the collection, and
+    // nobody can write, update or delete from the browser.
+    match /experiments/{experimentId}/replies/{replyId} {
+      allow get: if signedIn();
+      allow list, create, update, delete: if false;
     }
 
     // Client-side error reports. Append-only, tagged with the reporter's uid.
