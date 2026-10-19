@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 /*
- * Generate the AI replies for Session 2, locally. Run this between the two sessions.
+ * Generate the AI replies for Part 2, locally. Run this between the two parts.
  *
  *   npm run generate-replies                       dry run: counts and a cost estimate, nothing is called or written
  *   npm run generate-replies -- --yes --key <service-account.json>
  *                                                  calls the model (COSTS MONEY) and writes the replies
  *
- * For each Session 1 participant who finished, is not a test ID, and has a Prolific ID and a
+ * For each Part 1 participant who finished, is not a test ID, and has a Prolific ID and a
  * description, it:
  *   1. assigns the label ("ai" or "human") so the two groups stay balanced,
  *   2. asks the model for a reply with the original study's prompt (scripts/lib/reply.js),
@@ -14,7 +14,7 @@
  *      overwrites a reply that exists, so re-running only fills in the missing ones),
  *   4. appends a private log to data/private/replies-<rate id>.csv (gitignored: it contains the
  *      descriptions and Prolific IDs).
- * Session 2 reads its reply document using only the participant's Prolific ID.
+ * Part 2 reads its reply document using only the participant's Prolific ID.
  *
  * The Anthropic key comes from .env (ANTHROPIC_API_KEY or api_key) or the shell. The Firebase
  * service-account key path is passed with --key; this script never searches for credentials.
@@ -120,7 +120,7 @@ const ts = (v) => (v && typeof v.toMillis === "function" ? v.toMillis() : 0);
   const words = todo.map((r) => countWords(r.description));
   const meanWords = words.length ? words.reduce((a, b) => a + b, 0) / words.length : 0;
   const inTok = todo.length * (130 + 1.4 * meanWords), outTok = todo.length * 100;
-  console.log(`Session 1 (${describeId}): ${pSnap.size} participants`);
+  console.log(`Part 1 (${describeId}): ${pSnap.size} participants`);
   console.log(`  skipped: ${Object.entries(skipped).filter(([, v]) => v).map(([k, v]) => `${k} ${v}`).join(", ") || "none"}`);
   console.log(`  eligible: ${byPid.size}; already have a reply: ${already}; to generate now: ${todo.length}`);
   console.log(`  labels for the new ones: ai ${sim.ai - counts.ai}, human ${sim.human - counts.human} (totals after: ai ${sim.ai}, human ${sim.human})`);

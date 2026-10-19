@@ -59,20 +59,37 @@ experiment_id_phase2 <- "yin2024-label-phase2"
 # The original study's numbers, entered once and used by the power analysis, the Key
 # statistics table, and the side-by-side figures.
 #
-# Yin, Jia & Wakslak (2024), main experiment: the AI-label effect on Feeling Heard.
-# Table 1 (p. 3), "Feeling heard", means over the response manipulation:
-#   AI label     M = 5.13, SD = 1.46
-#   Human label  M = 5.81, SD = 1.30
-#   Delta (AI - human label) = -0.68, F(1, 451) = 30.31, p < .001, eta^2 = .063
-# N = 455 analysed (Methods, "Participants", p. 8).
-# Cell ns by label are NOT reported in the paper: the split below is an even approximation
-# (228 / 227). Replace with the exact ns from the OSF data (https://osf.io/8wnmr) before
-# finalizing; the original's interval and the power table depend on them slightly.
+# This replication shows only AI-generated responses, so the matching original comparison is the
+# label effect WITHIN the AI-response conditions (Yin, Jia & Wakslak, 2024, Table 2, p. 5):
+#   AI response, AI label      M = 5.41, SD = 1.33
+#   AI response, human label   M = 6.12, SD = 0.97
+# (NOT Table 1's label means, 5.13 vs 5.81, which pool AI and human responses.)
+# Cell sizes are not in the paper. They come from the authors' public data on OSF
+# (https://osf.io/8wnmr, "Being Heard by AI OSF.csv"), which reproduces Tables 1 and 2 exactly:
+# AI response / AI label n = 124, AI response / human label n = 110.
+# The paper's own test of this contrast (SI Table 2): t(451) = 4.00, p < .001, d = 0.52, 95% CI
+# [0.31, 0.74], using the error variance pooled over all four cells.
 original <- tibble(
   condition = c("ai", "human"),
-  n         = c(228, 227),
-  mean      = c(5.13, 5.81),
-  sd        = c(1.46, 1.30)
+  n         = c(124, 110),
+  mean      = c(5.41, 6.12),
+  sd        = c(1.33, 0.97)
+)
+
+# All four outcomes in the same cells (AI responses; AI label n = 124, human label n = 110).
+# Means and SDs are the paper's Table 2 (p. 5); the cell sizes are from the OSF data. (The raw OSF
+# data give 6.05 / 1.19 for accuracy in the human-label cell, a last-digit rounding difference.)
+# The measure names match the columns of the exported ratings rows.
+original_measures <- tribble(
+  ~measure,                ~condition, ~n,  ~mean, ~sd,
+  "feeling_heard",         "ai",       124, 5.41,  1.33,
+  "feeling_heard",         "human",    110, 6.12,  0.97,
+  "response_accuracy",     "ai",       124, 5.81,  1.18,
+  "response_accuracy",     "human",    110, 6.06,  1.02,
+  "responder_understood",  "ai",       124, 5.43,  1.47,
+  "responder_understood",  "human",    110, 6.19,  0.92,
+  "connection",            "ai",       124, 4.28,  1.80,
+  "connection",            "human",    110, 5.19,  1.18
 )
 ```
 
@@ -89,7 +106,7 @@ original <- tibble(
 
 | Tool and model | What it was used for | How you checked the output |
 |---|---|---|
-| Claude Code (claude-sonnet-5-5)* | *Review and understand the existing codebase and project setup; test around and setup the experiment code.* | The experiment code is for exploration and not the final version.
+| Claude Code (claude-sonnet-5-5)* | *Review and understand the existing codebase and project setup, implement the experiment, and review and validate the study design; update the analysis code;* | Test the experiment myself and with pilot participants; compare the study design with the original paper;
 
 I wrote all of the text in this report myself. AI tools were not used to write, rewrite or
 paraphrase it, and were not used to generate, alter, or impute any participant data. I take full
@@ -111,46 +128,89 @@ adapt its code and say so in the caption.
 ```{r}
 #| label: analysis-functions
 #| code-summary: "Show the analysis code (shared by Phase 1 and Phase 2)"
-# Load one phase's exported data and apply the exclusion rule. Returns NULL if that phase
-# has not been exported yet, which is how every section below knows to skip itself.
+# Load one phase's exported data and apply the exclusion rules of the analysis plan. Returns NULL if
+# that phase has not been exported yet, which is how every section below knows to skip itself.
 read_phase <- function(id) {
   dir <- file.path("..", "data", "raw", id)
   if (!all(file.exists(file.path(dir, c("participants.csv", "trials.csv"))))) return(NULL)
   participants <- read_csv(file.path(dir, "participants.csv"), show_col_types = FALSE)
+  # Testing IDs (EXPERIMENT.test_ids in experiment.js, given to TAs) are flagged is_test = TRUE.
+  if (!"is_test" %in% names(participants)) participants$is_test <- FALSE
+  n_test <- sum(coalesce(as.logical(participants$is_test), FALSE))
+  participants <- participants |> filter(!coalesce(as.logical(is_test), FALSE))
   trials       <- read_csv(file.path(dir, "trials.csv"), show_col_types = FALSE)
   errors_path  <- file.path(dir, "errors.csv")
   errors <- if (file.exists(errors_path)) read_csv(errors_path, show_col_types = FALSE) else tibble()
 
   # A participant who stopped before a screen has no row, hence no column, for its fields.
   for (col in c("consented", "condition", "feeling_heard", "response_accuracy",
-                "responder_understood", "suspicion")) {
+                "responder_understood", "connection")) {
     if (!col %in% names(trials)) trials[[col]] <- NA
   }
 
   complete <- participants |> filter(completed)
 
-  # Exclusion rule: the participant consented and has a computable Feeling Heard score (all
-  # six items answered). Nothing else is excluded: no attention, response-time or
-  # manipulation-check exclusions, and no disclosure-length or responder-AI-use rule (those
-  # belong to the original's design and do not apply here).
-  consented <- trials |>
-    filter(task == "consent", as.logical(consented)) |>
-    distinct(participant_id)
+  # Exclusion rules (the analysis plan): a participant is analysed only if they completed both parts,
+  # gave valid consent, and answered all six feeling-heard items (so the mean can be computed); the
+  # Part 1 description must also have at least 30 words (the interface already refuses shorter
+  # ones). Each participant is counted under the FIRST rule they fail, in the order below.
+  min_words <- 30
+
+  # Part 1 (describe): the "-describe" export of this phase, if it is on this machine. It is
+  # gitignored because it holds what participants typed; without it the three Part 1 rules cannot
+  # be checked here and the Data preparation table says so.
+  part1_dir <- file.path("..", "data", "raw", paste0(id, "-describe"))
+  part1 <- NULL
+  if (all(file.exists(file.path(part1_dir, c("participants.csv", "trials.csv"))))) {
+    p1p <- read_csv(file.path(part1_dir, "participants.csv"), show_col_types = FALSE)
+    p1t <- read_csv(file.path(part1_dir, "trials.csv"), show_col_types = FALSE)
+    if (!"is_test" %in% names(p1p)) p1p$is_test <- FALSE
+    for (col in c("consented", "n_words")) if (!col %in% names(p1t)) p1t[[col]] <- NA
+    by_p1 <- function(d, ...) d |> group_by(describe_participant_id = participant_id) |> summarise(..., .groups = "drop")
+    part1 <- p1p |>
+      filter(!coalesce(as.logical(is_test), FALSE)) |>
+      transmute(describe_participant_id = participant_id, p1_completed = as.logical(completed)) |>
+      left_join(by_p1(filter(p1t, task == "consent"), p1_consented = any(as.logical(consented), na.rm = TRUE)),
+                by = "describe_participant_id") |>
+      left_join(by_p1(filter(p1t, task == "describe"), p1_words = suppressWarnings(max(as.numeric(n_words), na.rm = TRUE))),
+                by = "describe_participant_id")
+  }
+  if (!"describe_participant_id" %in% names(participants)) participants$describe_participant_id <- NA_character_
+
   scores <- trials |>
     filter(task == "ratings") |>
     transmute(participant_id, condition,
               feeling_heard        = as.numeric(feeling_heard),
               response_accuracy    = as.numeric(response_accuracy),
-              responder_understood = as.numeric(responder_understood))
-  checked <- complete |>
-    semi_join(consented, by = "participant_id") |>
+              responder_understood = as.numeric(responder_understood),
+              connection           = as.numeric(connection))
+  consent2 <- trials |> filter(task == "consent") |>
+    group_by(participant_id) |> summarise(consented2 = any(as.logical(consented), na.rm = TRUE), .groups = "drop")
+  status <- participants |>
+    left_join(consent2, by = "participant_id") |>
     left_join(select(scores, participant_id, feeling_heard), by = "participant_id")
-  keep <- checked |> filter(!is.na(feeling_heard)) |> select(-feeling_heard)
+  if (is.null(part1)) {
+    status <- status |> mutate(p1_completed = NA, p1_consented = NA, p1_words = NA_real_)
+  } else {
+    status <- status |> left_join(part1, by = "describe_participant_id")
+  }
+  have_p1 <- !is.null(part1)
+  status <- status |>
+    mutate(reason = case_when(
+      !coalesce(completed, FALSE)                              ~ "Did not complete Part 2",
+      !coalesce(consented2, FALSE)                             ~ "No valid consent in Part 2",
+      have_p1 & !coalesce(p1_completed, FALSE)                 ~ "Part 1 not completed (or not linked to a Part 1 record)",
+      have_p1 & !coalesce(p1_consented, FALSE)                 ~ "No valid consent in Part 1",
+      have_p1 & coalesce(p1_words, 0) < min_words              ~ "Part 1 description under 30 words",
+      is.na(feeling_heard)                                     ~ "Missing one of the six feeling-heard items",
+      TRUE                                                     ~ "Analysed"))
+  keep <- status |> filter(reason == "Analysed") |> select(-feeling_heard)
+  scores <- scores |> filter(participant_id %in% keep$participant_id)
 
   list(participants = participants, trials = trials, errors = errors,
-       complete = complete, keep = keep,
-       scores = scores |> filter(participant_id %in% keep$participant_id),
-       n_no_score = sum(is.na(checked$feeling_heard)))
+       complete = complete, keep = keep, scores = scores, status = status,
+       part1_checked = have_p1, n_test = n_test,
+       n_no_score = sum(status$reason == "Missing one of the six feeling-heard items"))
 }
 
 # One row per label condition for the analysed participants: n, mean and SD of a measure.
@@ -164,11 +224,13 @@ label_summary <- function(d, var = "feeling_heard") {
 # The key statistic: difference in mean Feeling Heard (AI label minus human label) with a 95%
 # CI from Welch's t test, plus Cohen's d (pooled SD). Works from the per-condition summary,
 # so the original (summary statistics only) and the replication go through the same code.
-# NULL until both labels have at least two analysed participants.
+# NULL until both labels have at least two analysed participants (and some variation).
 diff_ci <- function(s) {
   ai <- s[s$condition == "ai", ]
   hu <- s[s$condition == "human", ]
   if (nrow(ai) == 0 || nrow(hu) == 0 || ai$n < 2 || hu$n < 2 || anyNA(c(ai$sd, hu$sd))) return(NULL)
+  # No variation in either group (for example everyone gave the same rating): the test is undefined.
+  if (ai$sd == 0 && hu$sd == 0) return(NULL)
   v_ai <- ai$sd^2 / ai$n
   v_hu <- hu$sd^2 / hu$n
   se   <- sqrt(v_ai + v_hu)
@@ -177,7 +239,10 @@ diff_ci <- function(s) {
   sd_p <- sqrt(((ai$n - 1) * ai$sd^2 + (hu$n - 1) * hu$sd^2) / (ai$n + hu$n - 2))
   tibble(N = ai$n + hu$n, estimate = est,
          ci_low = est - qt(.975, df) * se, ci_high = est + qt(.975, df) * se,
-         statistic = est / se, df = df, p = 2 * pt(-abs(est / se), df), d = est / sd_p)
+         statistic = est / se, df = df, p = 2 * pt(-abs(est / se), df), d = est / sd_p,
+         # Approximate 95% CI for d (large-sample standard error).
+         d_low  = est / sd_p - 1.96 * sqrt((ai$n + hu$n) / (ai$n * hu$n) + (est / sd_p)^2 / (2 * (ai$n + hu$n))),
+         d_high = est / sd_p + 1.96 * sqrt((ai$n + hu$n) / (ai$n * hu$n) + (est / sd_p)^2 / (2 * (ai$n + hu$n))))
 }
 
 # Side-by-side figure: any number of studies on the same axes, in the order given. Each
@@ -202,6 +267,38 @@ comparison_plot <- function(...) {
     labs(x = "Label", y = "Feeling Heard (1-7)", fill = NULL) +
     theme_minimal(base_size = 12) +
     theme(legend.position = "top")
+}
+
+# The four outcomes of the original, in its order.
+measure_labels <- c(feeling_heard = "Feeling heard", response_accuracy = "Response accuracy",
+                    responder_understood = "Responder understood me", connection = "Connection to responder")
+
+# n, mean and SD by label for each of the four outcomes (the replication's analysed participants).
+measure_summaries <- function(d) {
+  map_dfr(names(measure_labels), ~ label_summary(d, .x) |> mutate(measure = .x))
+}
+# The label effect (AI minus human label) with its 95% CI for each outcome. Same code for the
+# original (original_measures) and the replication; outcomes with fewer than two per label are dropped.
+measure_effects <- function(summ) {
+  map_dfr(unique(summ$measure), function(m) {
+    r <- diff_ci(summ[summ$measure == m, ])
+    if (is.null(r)) NULL else mutate(r, measure = m)
+  })
+}
+# Label effects for the four outcomes, studies side by side, with 95% CIs.
+effects_plot <- function(...) {
+  studies <- list(...)
+  studies <- studies[!map_lgl(studies, ~ is.null(.x) || nrow(.x) == 0)]
+  df <- imap_dfr(studies, ~ mutate(.x, Study = .y)) |>
+    mutate(measure = factor(measure_labels[measure], levels = measure_labels),
+           Study = factor(Study, levels = names(studies)))
+  ggplot(df, aes(x = measure, y = estimate, colour = Study)) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
+    geom_pointrange(aes(ymin = ci_low, ymax = ci_high), position = position_dodge(width = 0.5)) +
+    scale_colour_manual(values = c("grey40", "#1E6E76", "#B8792A")[seq_along(studies)]) +
+    labs(x = NULL, y = "Difference in mean rating (AI label \u2212 human label)", colour = NULL) +
+    theme_minimal(base_size = 12) +
+    theme(legend.position = "top", axis.text.x = element_text(angle = 12, hjust = 1))
 }
 
 phase1 <- read_phase(experiment_id)
@@ -250,117 +347,78 @@ I’d like to preregister a linear regression comparing "feeling heard" scores b
 
 ### Power analysis
 
-::: {.callout-tip icon=false}
-## Guidance
-
-Report the original effect size, the sample needed for 80%, 90% and 95% power to detect it,
-and the sample you chose and why. The table below is computed from the original study's
-numbers entered at the top of this file.
-
-Original effects are usually overestimates, so powering to the original effect tends to
-produce an underpowered replication. One widely used alternative is to collect 2.5 times the
-original sample, which gives 80% power to detect an effect the original study had only 33%
-power to detect (Simonsohn, 2015; Experimentology §10.4). Say which approach you used, and
-what the course's participant budget allowed.
-:::
+In the original paper, the authors reported Cohen's $d = 0.52$ for the labeling effect on feeling heard among participants receiving AI-generated responses. I calculated the sample sizes to achieve 80%, 90%, and 95% statistical power to detect the effect size reported in the original paper, as well as the sample size required using the 2.5× original sample size approach (Simonsohn, 2015; Experimentology §10.4).Given the course's budget constraints, I plan to recruit 146 participants in total (73 per condition) to provide about 95% power to detect the original effect size.
 
 ```{r}
 #| label: power
-orig_stats <- diff_ci(original)
-sd_pooled  <- sqrt(sum((original$n - 1) * original$sd^2) / (sum(original$n) - 2))
-original_effect <- orig_stats$estimate
+# Effect to detect: Cohen's d reported by the original paper for the AI-response comparison
+# (SI Table 2, Feeling Heard, AI response human label - AI response AI label: d = 0.52, 95% CI [0.31, 0.74]).
+original_d <- 0.52
 
 power_rows <- map_dfr(c(0.80, 0.90, 0.95), function(pw) {
-  n <- power.t.test(delta = abs(original_effect), sd = sd_pooled,
+  n <- power.t.test(delta = original_d, sd = 1,
                     power = pw, sig.level = 0.05)$n
   tibble(power = scales::percent(pw), n_per_group = ceiling(n), n_total = 2 * ceiling(n))
 })
 
 two_and_half <- ceiling(2.5 * original$n)
+power_rows <- power_rows |>
+  mutate(across(everything(), as.character)) |>
+  bind_rows(tibble(power = "2.5 x original sample (Simonsohn, 2015)",
+                   n_per_group = paste(two_and_half, collapse = " / "),
+                   n_total = as.character(sum(two_and_half))))
 
 knitr::kable(power_rows, col.names = c("Power", "N per label condition", "N total"),
              caption = sprintf(
-               "Sample needed to detect the original effect (Feeling Heard, AI label minus human label = %.2f points, pooled SD = %.2f), two-sided alpha = .05.",
-               original_effect, sd_pooled))
+               "Sample needed to detect the original effect (Feeling Heard among AI-generated responses, AI label vs. human label, Cohen's d = %.2f from SI Table 2), two-sided alpha = .05. The last row is 2.5 times the original cell sizes (AI label / human label).",
+               original_d))
 ```
-
-For comparison, 2.5 times the original sample would be `r two_and_half[1]` in the gain frame
-and `r two_and_half[2]` in the loss frame (`r sum(two_and_half)` in total).
 
 ### Planned sample
 
-::: {.callout-tip icon=false}
-## Guidance
+We plan to recruit 146 participants through Prolific. Consistent with the original study, I would restrict to US residents aged 18 or older who are native English speakers. Data collection will stop once 146 participants have completed the study and passed the exclusion criteria. The study will include two parts, which Part 1 takes approximately 2 minutes and Part 2 takes approximately 5 minutes. Participants will be compensated \$1.40 (\$0.40 and \$1.00) for the study (\$12/h).
 
-Planned sample size and stopping rule, sampling frame (for example, "US residents on Prolific,
-fluent in English, 18 or older"), known demographics, and any preselection or screening. The
-stopping rule should be data-independent: "collect until N participants pass the exclusion
-criteria below" rather than "until the result is clear".
-:::
 
 ### Materials
 
-::: {.callout-tip icon=false}
-## Guidance
+First, participants will be asked to describe a complex situation they are currently experiencing, following the exact same instructions as in the original paper: "Please take a moment to think about a complex situation that you are grappling with. This might involve a challenging decision or issue in either your personal or professional life, characterized by numerous interwoven factors. You might be dealing with an interpersonal conflict involving colleagues, family members, or friends, and are uncertain about the best course of action. You might be wrestling with a profound question or thought."
 
-All materials. You can quote the original article directly: put the text in quotation marks
-and note that it was followed precisely, or quote it and point out the exceptions. Link to the
-live experiment above rather than pasting screenshots of every screen.
-:::
+Since our replication focuses on the labeling effect among AI-generated responses, all responses will be generated using a large language model (LLM) through an API call with the following prompt: "A person you otherwise don't know described the following complex situation they have been dealing with. Please respond to what they said in a way that makes them feel understood. Keep your response to 57 words. '[description]'" We set the target response length to 57 words, which is the median of the six batch-level median response lengths reported in the original paper.
+
+The remaining survey questions follow the original study in both wording and order, with minor adjustments to references to the responder. In Part 1, after describing their complex situation, participants will rate the extent to which they experienced six emotions (happiness, sadness, fear, anger, surprise, and disgust) on a 7-point scale. In Part 2, after reading an AI-generated response randomly labeled as either AI-generated or human-written, participants will complete the same outcome measures as in the original study, including feeling heard, perceived response accuracy, perceived responder understanding, and feeling of connection to the responder. Participants will then answer questions about their emotional state, loneliness, mind perception of AI, and familiarity with, use of, and attitudes toward AI. Finally, participants will complete a question assessing their suspicion about the source of the response.
+
+
 
 ### Procedure
 
-::: {.callout-tip icon=false}
-## Guidance
+We adapt the procedure from the original study; because we focus only on the labeling effect, we conduct the experiment in two parts instead of three. In Part 1, participants will first provide informed consent and enter their Prolific ID. They will then read the study instructions and be asked to describe a complex situation they are currently experiencing. Unlike the original study, which asked participants to record an audio description, participants will type their descriptions in a chat interface. After submitting their descriptions, participants will rate the emotions they experienced in the situation.
 
-As for Materials: quote the original where you can and point out the exceptions. Describe the
-sequence a participant experiences, from consent to debrief, and how long it takes.
-:::
+After collecting all responses from Part 1, we will generate an AI response to each participant's description using an LLM. Participants will then be randomly assigned to one of two conditions, in which the response is labeled as either AI-generated or human-written.
+
+In Part 2, participants will be invited back to read the response to their original description, presented with their assigned label. They will then complete the same outcome measures questions as in the original study, followed by questions about their emotions, loneliness, mind perception, AI attitudes, and suspicion about the response's source. Finally, participants will provide demographic information and receive a debrief explaining that all responses were AI-generated.
+
+Overall, Part 1 is expected to take about 2 minutes, and Part 2 about 5 minutes.
+
 
 ### Analysis plan
 
-::: {.callout-tip icon=false}
-## Guidance
+First, we will exclude participants who do not complete both parts of the study, do not provide valid consent, or have missing responses to any of the six feeling-heard questions. Following the original study, participants must provide a sufficiently detailed description of their situation. In our replication, we require a minimum of 30 words when participants describe their experiment in Part 1.
 
-The analysis strategy, as close to the original as possible: data cleaning rules, exclusion
-rules, covariates, and the model or test. Original papers often do not spell this out; say
-where you had to make a choice and what you chose.
+Our primary analysis will examine whether labeling an AI-generated response as AI rather than human affects participants' feeling of being heard. Following the original study, we will calculate the mean of the six feeling-heard items for each participant. We will then conduct a two-sided Welch's t-test comparing the AI-label and human-label conditions, using $\alpha = 0.05$. Considering the original study's results, we hypothesize that participants in the AI-label condition will report lower levels of feeling heard than those in the human-label condition. We will report the difference in means, its 95% confidence interval, and Cohen's $d$.
 
-**State the key analysis of interest explicitly.** That is the single test your replication
-stands or falls on, and it must match your preregistration. You can pre-specify additional
-analyses here too.
-:::
+In addition, we will conduct exploratory analyses examining the effect of labeling on the other three outcomes from the original study, including perceived response accuracy, perceived responder understanding, and feeling of connection to the responder. We will compare these outcomes between the two conditions using Welch's t-tests. 
 
-**Key analysis of interest.** The proportion of participants choosing the risky program is
-higher in the loss frame than in the gain frame, tested with a chi-square test of independence
-on the 2 × 2 table of frame by choice. The effect size is the difference in the proportion
-choosing the risky program (loss minus gain), with a 95% confidence interval.
-
-**Exclusions.** Participants are excluded if they did not complete the study, if they answered
-no speeded trial at all (every lexical-decision trial timed out, the signature of a device
-without a keyboard), or if they answered fewer than 6 of the 8 lexical-decision trials
-correctly.
 
 ### Differences from the original study
 
-::: {.callout-tip icon=false}
-## Guidance
+There are four main differences. First, I focus on the labeling effect among AI-generated responses. While the original study used a 2 × 2 design manipulating both the response source (AI vs. human) and the response label (AI vs. human), in this project all responses will be generated by AI but randomly labeled as either AI-generated or human-written.
 
-Every known difference in sample, setting, procedure, materials, and analysis, one per row.
-Minimizing differences is the goal, but some always remain. For each one, say whether it is
-expected to matter, based on claims in the original article or later research on when the
-effect does and does not appear. The rows below are the demo's real differences and show the
-level of detail expected; replace them with yours.
-:::
+Second, we use a different LLM instead of GPT-4 through Bing Chat to generate responses, since there is no public access to GPT-4 through Bing Chat anymore. However, we follow the same prompt as the original study to maintain consistency in how responses are generated.
 
-| Aspect | Original study | This replication | Expected to matter? |
-|---|---|---|---|
-| Sample | University students in Stanford and British Columbia classrooms | Adults recruited on Prolific | Possibly. Framing effects have been found in both student and general samples, but their size varies across populations. |
-| Setting | Paper questionnaire in class | Online, unsupervised, on the participant's own computer | Unlikely for a single vignette, though attention may be lower online. |
-| Wording | "an unusual Asian disease" | "an unusual disease" | Unlikely. The ethnonym is incidental to the manipulation and dated. |
-| Design | Between subjects: each participant saw one frame | Between subjects, randomly assigned | No. |
-| Response | Circle a program on paper | Click a button | Unlikely. |
-| Other tasks | Problems presented alongside other questionnaire items | Followed by a short lexical-decision task used as an attention check | Unlikely: the check comes after the choice. |
+Third, we ask participants to type their descriptions of complex situations rather than record audio messages, as in the original study. We require participants to provide at least 30 words and disable pasting to encourage them to describe their own experiences.
+
+In addition, we make minor wording adjustments to reflect changes in AI platforms. For example, we replace references to "Bing Chat" with "an AI chatbot" and update the AI familiarity and attitude questions to refer to AI chatbots more generally, including ChatGPT, Copilot, and Gemini. The remaining outcome measures follow the original study.
+
 
 ### Methods addendum (post data collection)
 
@@ -372,6 +430,7 @@ actual sample and any deviation from the plan above.
 :::
 
 #### Actual sample
+
 
 ```{r}
 #| label: no-data-notice
@@ -421,6 +480,28 @@ bind_rows(
 ```
 
 ```{r}
+#| label: return-rate
+#| eval: !expr have_data
+# Part 1 -> Part 2: how many of the people who finished Part 1 came back. Needs the Part 1 export
+# (data/raw/<id>-describe/), which is gitignored because it holds what participants typed; on a
+# machine without it this chunk says so and skips itself.
+p1_path <- file.path("..", "data", "raw", paste0(experiment_id, "-describe"), "participants.csv")
+if (file.exists(p1_path) && "describe_participant_id" %in% names(participants)) {
+  p1 <- read_csv(p1_path, show_col_types = FALSE)
+  if (!"is_test" %in% names(p1)) p1$is_test <- FALSE
+  p1 <- p1 |> filter(!coalesce(as.logical(is_test), FALSE), completed)
+  started_p2   <- participants |> filter(describe_participant_id %in% p1$participant_id)
+  completed_p2 <- started_p2 |> filter(completed)
+  tibble(Step = c("Part 1: completed", "Part 2: started", "Part 2: completed"),
+         `Participants` = c(nrow(p1), n_distinct(started_p2$describe_participant_id),
+                            n_distinct(completed_p2$describe_participant_id))) |>
+    knitr::kable(caption = "Return from Part 1 to Part 2 (distinct Part 1 participants).")
+} else {
+  message("Part 1 export not found (data/raw/", experiment_id, "-describe/): return rate not computed.")
+}
+```
+
+```{r}
 #| label: sample-text
 #| eval: !expr have_data
 #| echo: false
@@ -438,12 +519,13 @@ cat("\n")
 ```{r}
 #| label: demographics
 #| eval: !expr have_data
+#| results: asis
 # The categories and counts below are from Yin et al. (2024), Methods, "Participants" (p. 8),
-# for the 455 recipients: gender 227 women, 6 non-binary, 1 did not report (so 221 men, by
-# subtraction); race/ethnicity 343 White, 55 Black, 26 mixed race, 15 Asian, 11 Hispanic,
+# for all 455 recipients (AI and human responses together): gender 221 women, 227 men,
+# 6 non-binary, 1 did not report; race/ethnicity 343 White, 55 Black, 26 mixed race, 15 Asian, 11 Hispanic,
 # 3 other, 1 Native American, 1 did not report; mean age 43.82 (SD 13.12).
 paper_gender <- tibble(category = c("Woman", "Man", "Non-binary", "Prefer not to say"),
-                       paper_n  = c(227, 221, 6, 1))
+                       paper_n  = c(221, 227, 6, 1))
 paper_race   <- tibble(category = c("White", "Black", "Asian", "Hispanic", "Native American",
                                     "Mixed race", "Other", "Prefer not to say"),
                        paper_n  = c(343, 55, 15, 11, 1, 26, 3, 1))
@@ -470,23 +552,27 @@ tabulate_category <- function(values, paper) {
     arrange(category)
 }
 
+# Several tables come out of one chunk, and R only auto-prints the last value of a block, so each
+# table is printed explicitly (the chunk uses results: asis).
+show_table <- function(k) { cat(k, sep = "\n"); cat("\n\n") }
 if (nrow(demo) > 0) {
   demo |>
     summarise(N = n(), `Mean age` = round(mean(age, na.rm = TRUE), 2),
               `SD age` = round(sd(age, na.rm = TRUE), 2),
               `Age not given` = sum(is.na(age)),
               `Original mean age` = 43.82, `Original SD age` = 13.12) |>
-    knitr::kable(caption = "Age of the analysed sample, with the original's values.")
+    knitr::kable(caption = "Age of the analysed sample, with the original's values.") |> show_table()
   tabulate_category(demo$gender, paper_gender) |>
     knitr::kable(col.names = c("Gender", "This study", "Original (N = 455)"),
-                 caption = "Gender of the analysed sample and the original's counts.")
+                 caption = "Gender of the analysed sample and the original's counts.") |> show_table()
   tabulate_category(demo$race, paper_race) |>
     knitr::kable(col.names = c("Race / ethnicity", "This study", "Original (N = 455)"),
-                 caption = "Race / ethnicity of the analysed sample and the original's counts.")
+                 caption = "Race / ethnicity of the analysed sample and the original's counts.") |> show_table()
 }
 ```
 
 #### Deviations from the preregistered plan
+
 
 ::: {.callout-tip icon=false}
 ## Guidance
@@ -497,17 +583,32 @@ belong here even if they seem minor, together with the reason.
 
 ## Results
 
+
 ### Data preparation
+To run the analysis, I conducted four pilot sessions, with participants randomly assigned to either the human-labeled condition (n = 2) or the AI-labeled condition (n = 2).
 
-::: {.callout-tip icon=false}
-## Guidance
-
-Data preparation follows the analysis plan. Loading and exclusions are done by the shared
-analysis code under Key statistics (open "Show the analysis code"). Describe anything you did to
-the data beyond that.
-:::
+```{r}
+#| label: data-prep-exclusions
+#| eval: !expr have_data
+# How many records each exclusion rule of the analysis plan removed. The rules are applied in
+# read_phase() (under Key statistics); a participant is counted under the first rule they fail.
+st <- phase1$status
+rules <- c("Did not complete Part 2", "No valid consent in Part 2",
+           "Part 1 not completed (or not linked to a Part 1 record)", "No valid consent in Part 1",
+           "Part 1 description under 30 words", "Missing one of the six feeling-heard items")
+part1_rules <- rules[3:5]
+tibble(
+  Step = c("Testing IDs (dropped before anything else)", rules, "Analysed: AI label", "Analysed: human label"),
+  n = c(as.character(phase1$n_test),
+        map_chr(rules, ~ if (.x %in% part1_rules && !phase1$part1_checked) "not checked (Part 1 export not on this machine)"
+                         else as.character(sum(st$reason == .x))),
+        as.character(sum(st$reason == "Analysed" & st$condition == "ai", na.rm = TRUE)),
+        as.character(sum(st$reason == "Analysed" & st$condition == "human", na.rm = TRUE)))) |>
+  knitr::kable(caption = "Data preparation: records removed by each exclusion rule, and the analysed N by label.")
+```
 
 ### Confirmatory analysis
+
 
 ```{r}
 #| label: confirmatory
@@ -526,7 +627,27 @@ if (all(c("ai", "human") %in% scores$condition) && all(table(scores$condition) >
 }
 ```
 
+```{r}
+#| label: confirmatory-effect
+#| eval: !expr have_data
+# The key test's effect sizes: the difference in means (AI label minus human label) with its 95% CI,
+# and Cohen's d with an approximate 95% CI.
+rep_stats <- diff_ci(label_summary(phase1))
+if (!is.null(rep_stats)) {
+  rep_stats |>
+    transmute(N, `Difference (AI − human label)` = sprintf("%.2f", estimate),
+              `95% CI` = sprintf("[%.2f, %.2f]", ci_low, ci_high),
+              `t(df)` = sprintf("%.2f (%.1f)", statistic, df),
+              p = format.pval(p, digits = 2, eps = 0.001),
+              `d [95% CI]` = sprintf("%.2f [%.2f, %.2f]", d, d_low, d_high)) |>
+    knitr::kable(caption = "The key test: label effect on Feeling Heard (Welch t test), with Cohen's d.")
+} else {
+  message("Effect size table not shown: it needs at least two analysed participants in each label condition.")
+}
+```
+
 ### Replication assessment
+
 
 ::: {.callout-tip icon=false}
 ## Guidance
@@ -549,9 +670,9 @@ if (!is.null(rep)) {
     transmute(Study, N,
               `Difference (AI − human label)` = sprintf("%.2f points", estimate),
               `95% CI` = sprintf("[%.2f, %.2f]", ci_low, ci_high),
-              d = sprintf("%.2f", d),
+              `d [95% CI]` = sprintf("%.2f [%.2f, %.2f]", d, d_low, d_high),
               p = format.pval(p, digits = 2, eps = 0.001)) |>
-    knitr::kable(caption = "Effect size: difference in mean Feeling Heard (1-7), AI label minus human label.")
+    knitr::kable(caption = "Effect size: difference in mean Feeling Heard (1-7), AI label minus human label. d uses the pooled SD of the two label groups; the paper's d = 0.52 uses the SD pooled over all four of its conditions.")
 } else {
   message("Replication effect size not computed yet: need at least two analysed participants in each label condition.")
 }
@@ -570,7 +691,11 @@ if (!is.null(rep)) {
     if (excludes_zero) "excludes" else "includes",
     if (includes_orig) "includes" else "does not include",
     orig$estimate))
-  cat("These two facts are the starting point for the summary in the Discussion, not the conclusion.\n")
+  cat(sprintf("The replication estimate of %.2f points %s the original's 95%% interval [%.2f, %.2f]. ",
+              rep$estimate,
+              if (rep$estimate >= orig$ci_low & rep$estimate <= orig$ci_high) "lies inside" else "lies outside",
+              orig$ci_low, orig$ci_high))
+  cat("These facts are the starting point for the summary in the Discussion, not the conclusion.\n")
 }
 ```
 
@@ -609,13 +734,14 @@ caption. If the original reported no variability, say so rather than leaving it 
 ```{r}
 #| label: fig-comparison
 #| eval: !expr have_data
-#| fig-cap: "Feeling Heard (1-7) by label condition, original study and Phase 1 replication. Error bars are 95% confidence intervals. The original's cell sizes are approximate."
+#| fig-cap: "Feeling Heard (1-7) by label condition, original study and Phase 1 replication. Error bars are 95% confidence intervals. Original: the AI-response conditions of Yin et al. (2024), Table 2, with cell sizes from the authors' OSF data."
 #| fig-width: 7
 #| fig-height: 4
 comparison_plot(Original = original, `Phase 1: replication` = label_summary(phase1))
 ```
 
 ### Exploratory analyses
+
 
 ::: {.callout-tip icon=false}
 ## Guidance
@@ -625,24 +751,40 @@ they generate hypotheses rather than test them.
 :::
 
 ```{r}
-#| label: exploratory-secondary
+#| label: exploratory-outcomes
 #| eval: !expr have_data
-# Secondary measures and the manipulation check (the SI suspicion item), by label condition.
-# These are not part of the confirmatory test and nothing is excluded on them.
-phase1$scores |>
-  pivot_longer(c(response_accuracy, responder_understood), names_to = "Measure", values_to = "value") |>
-  group_by(Measure, Label = condition) |>
-  summarise(n = sum(!is.na(value)), Mean = round(mean(value, na.rm = TRUE), 2),
-            SD = round(sd(value, na.rm = TRUE), 2), .groups = "drop") |>
-  knitr::kable(caption = "Exploratory: secondary measures (1-7) by label condition.")
+# Exploratory (the analysis plan): the label effect on the other three outcomes of the original,
+# each with a Welch t test (AI label minus human label), next to the original's cells.
+secondary <- c("response_accuracy", "responder_understood", "connection")
+outcome_rows <- function(summ, study) {
+  map_dfr(secondary, function(m) {
+    s_m <- summ[summ$measure == m, ]
+    ai <- s_m[s_m$condition == "ai", ]; hu <- s_m[s_m$condition == "human", ]
+    r <- diff_ci(s_m)
+    tibble(Outcome = measure_labels[[m]], Study = study,
+           `n (AI / human label)` = sprintf("%d / %d", ai$n, hu$n),
+           `M (SD), AI label` = sprintf("%.2f (%.2f)", ai$mean, ai$sd),
+           `M (SD), human label` = sprintf("%.2f (%.2f)", hu$mean, hu$sd),
+           `Difference [95% CI]` = if (is.null(r)) "not computable" else sprintf("%.2f [%.2f, %.2f]", r$estimate, r$ci_low, r$ci_high),
+           `t(df)` = if (is.null(r)) "" else sprintf("%.2f (%.1f)", r$statistic, r$df),
+           p = if (is.null(r)) "" else format.pval(r$p, digits = 2, eps = 0.001),
+           `d [95% CI]` = if (is.null(r)) "" else sprintf("%.2f [%.2f, %.2f]", r$d, r$d_low, r$d_high))
+  })
+}
+rep_sum <- measure_summaries(phase1)
+bind_rows(outcome_rows(original_measures, "Original"), outcome_rows(rep_sum, "Phase 1: replication")) |>
+  arrange(factor(Outcome, levels = measure_labels[secondary]), Study) |>
+  knitr::kable(caption = "Exploratory: label effect on the other three outcomes (1-7), Welch t tests; original = AI-response conditions (Table 2).")
+```
 
-trials |>
-  filter(task == "suspicion", participant_id %in% keep$participant_id) |>
-  mutate(suspicion = as.numeric(suspicion)) |>
-  group_by(Label = condition) |>
-  summarise(n = sum(!is.na(suspicion)), Mean = round(mean(suspicion, na.rm = TRUE), 2),
-            SD = round(sd(suspicion, na.rm = TRUE), 2), .groups = "drop") |>
-  knitr::kable(caption = "Exploratory: suspicion that the response came from the other source (1-7) by label condition.")
+```{r}
+#| label: fig-effects
+#| eval: !expr have_data
+#| fig-cap: "Exploratory: label effect (AI label minus human label) on the four outcomes, original (AI-response conditions, Table 2) and Phase 1 replication, with 95% confidence intervals. Outcomes with fewer than two analysed participants per label are not shown."
+#| fig-width: 8
+#| fig-height: 4
+effects_plot(Original = measure_effects(original_measures),
+             `Phase 1: replication` = measure_effects(rep_sum))
 ```
 
 ```{r}
@@ -660,6 +802,7 @@ if (nrow(errors) > 0) {
 
 ### Summary of replication attempt
 
+
 ::: {.callout-tip icon=false}
 ## Guidance
 
@@ -670,6 +813,7 @@ original, not just the p value.
 :::
 
 ### Commentary
+
 
 ::: {.callout-tip icon=false}
 ## Guidance

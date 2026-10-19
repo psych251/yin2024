@@ -1,6 +1,6 @@
-// End-to-end test: a robot participant plays both sessions.
+// End-to-end test: a robot participant plays both parts.
 //
-// Session 1 ("describe", ?part=describe) and Session 2 ("rate", ?part=rate) save under two
+// Part 1 ("describe", ?part=describe) and Part 2 ("rate", ?part=rate) save under two
 // experiment ids. Between them, scripts/generate-replies.js writes each participant's reply; the
 // full-pipeline test below runs that script in its --mock mode (no model call, no cost).
 //
@@ -21,8 +21,8 @@ const { replyDocId } = require("../scripts/lib/reply");
 const EMULATOR = process.env.EMULATOR === "1" || !!process.env.FIRESTORE_EMULATOR_HOST;
 const PROJECT = "demo-psych251";
 const BASE_ID = "yin2024-label-pilot-a";
-const DESCRIBE_ID = BASE_ID + "-describe"; // Session 1
-const RATE_ID = BASE_ID; // Session 2
+const DESCRIBE_ID = BASE_ID + "-describe"; // Part 1
+const RATE_ID = BASE_ID; // Part 2
 const FS = `http://localhost:8080/v1/projects/${PROJECT}/databases/(default)/documents`;
 
 const DESCRIBE_URL = "/?emulator=1&part=describe";
@@ -58,7 +58,7 @@ async function enterProlificId(page, pid) {
   await continueSurvey(page);
 }
 
-// Session 1: consent, ID, instructions, the chat message (paste blocked), six emotions, thanks.
+// Part 1: consent, ID, instructions, the chat message (paste blocked), six emotions, thanks.
 async function runDescribe(page, { pid = null, finish = true } = {}) {
   await page.getByRole("button", { name: "I agree to participate" }).click();
   await enterProlificId(page, pid);
@@ -85,7 +85,7 @@ async function runDescribe(page, { pid = null, finish = true } = {}) {
   await expect(page.getByText("All done")).toBeVisible({ timeout: 30000 });
 }
 
-// Session 2: consent, ID (the page looks up the reply), label page, the reply, the ratings and the
+// Part 2: consent, ID (the page looks up the reply), label page, the reply, the ratings and the
 // rest. Returns the text of pages the tests want to check.
 async function runRate(page, { pid = null, stopBeforeFinish = false } = {}) {
   const seen = {};
@@ -192,19 +192,19 @@ test.describe("experiment", () => {
 
   // ---- landing page ----------------------------------------------------------------------
 
-  test("without ?part a landing page links to both sessions and no study starts", async ({ page }) => {
+  test("without ?part a landing page links to both parts and no study starts", async ({ page }) => {
     await page.goto("/?emulator=1");
     await expect(page.locator("#landing")).toBeVisible();
-    await expect(page.getByRole("link", { name: /Session 1/ })).toHaveAttribute("href", /part=describe/);
-    await expect(page.getByRole("link", { name: /Session 2/ })).toHaveAttribute("href", /part=rate/);
+    await expect(page.getByRole("link", { name: /Part 1/ })).toHaveAttribute("href", /part=describe/);
+    await expect(page.getByRole("link", { name: /Part 2/ })).toHaveAttribute("href", /part=rate/);
     await expect(page.getByRole("button", { name: "I agree to participate" })).toHaveCount(0);
     await page.goto("/?emulator=1&part=1"); // the numeric alias
     await expect(page.getByRole("button", { name: "I agree to participate" })).toBeVisible();
   });
 
-  // ---- Session 1 -------------------------------------------------------------------------
+  // ---- Part 1 -------------------------------------------------------------------------
 
-  test("session 1 saves the description and emotions, and keeps the typed ID out of the trial data", async ({ page }) => {
+  test("part 1 saves the description and emotions, and keeps the typed ID out of the trial data", async ({ page }) => {
     const errors = [];
     page.on("pageerror", (e) => errors.push(String(e)));
     const pid = uniquePid("typedpid");
@@ -220,7 +220,7 @@ test.describe("experiment", () => {
     const pdoc = await participantDoc(DESCRIBE_ID, docId);
     expect(pdoc.completed).toBe(true);
     expect(pdoc.prolific_pid).toBe(pid); // export.js moves this to identifiers.csv
-    expect(pdoc.condition).toBeUndefined(); // the label is assigned between the sessions
+    expect(pdoc.condition).toBeUndefined(); // the label is assigned between the parts
     const trials = await trialRows(DESCRIBE_ID, docId);
     const idRow = trials.find((t) => t.task === "prolific_id");
     expect(idRow.prolific_id_given).toBe(true);
@@ -314,10 +314,10 @@ test.describe("experiment", () => {
     await expect(page.getByText("QA123CODE")).toBeVisible();
   });
 
-  // ---- Session 2 -------------------------------------------------------------------------
+  // ---- Part 2 -------------------------------------------------------------------------
 
   for (const label of ["ai", "human"]) {
-    test(`session 2 finds the stored reply and shows it under the "${label}" label`, async ({ page }) => {
+    test(`part 2 finds the stored reply and shows it under the "${label}" label`, async ({ page }) => {
       const errors = [];
       page.on("pageerror", (e) => errors.push(String(e)));
       const pid = uniquePid("seed" + label);
@@ -368,7 +368,7 @@ test.describe("experiment", () => {
       expect(trials.find((t) => t.task === "suspicion").suspicion).toBe(4);
       expect(trials.find((t) => t.task === "demographics").response.race).toBe("Asian");
       // As exported (export.js moves the prolific_pid key to identifiers.csv): the ID is not in any
-      // trial row, and the participant's description is not copied into Session 2.
+      // trial row, and the participant's description is not copied into Part 2.
       const exported = trials.map(({ prolific_pid, ...row }) => row);
       expect(JSON.stringify(exported)).not.toContain(pid);
       expect(JSON.stringify(exported)).not.toContain(DESCRIPTION);
@@ -430,7 +430,7 @@ test.describe("experiment", () => {
       await page.waitForFunction(() => window.__saver && window.__saver.docId);
       await runDescribe(page, { pid });
     }
-    // a testing ID in Session 1 is flagged and must not receive a reply
+    // a testing ID in Part 1 is flagged and must not receive a reply
     await page.goto(DESCRIBE_URL);
     await page.waitForFunction(() => window.__saver && window.__saver.docId);
     await runDescribe(page, { pid: "TA-TEST-AI" });
@@ -464,7 +464,7 @@ test.describe("experiment", () => {
     // running it again creates nothing new
     expect(run(["--yes"])).toContain("Nothing to do");
 
-    // Session 2 for participant A: the page finds that very reply and its label
+    // Part 2 for participant A: the page finds that very reply and its label
     const stored = decodeFields((await fsGet(`experiments/${RATE_ID}/replies/${replyDocId(pidA)}`)).body.fields);
     await page.goto(`${RATE_URL}&PROLIFIC_PID=${pidA}`);
     await page.waitForFunction(() => window.__saver && window.__saver.docId);

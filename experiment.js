@@ -3,21 +3,21 @@
  * an AI label diminishes this impact". Chatbot-interface version: AI-generated replies only, and
  * the label (AI vs. human) is the manipulation.
  *
- * Two sessions, like the original's Parts 1 and 3 (Part 2, the human responders, is dropped):
+ * Two parts, like the original's Parts 1 and 3 (the original's Part 2, the human responders, is dropped):
  *
- *   ?part=describe   SESSION 1
+ *   ?part=describe   PART 1
  *       consent -> Prolific ID -> instructions -> describe a situation in a chat box -> six
  *       emotions -> thanks
- *   (between sessions you run `npm run generate-replies`: an LLM replies to each description and
+ *   (between the parts you run `npm run generate-replies`: an LLM replies to each description and
  *    the AI/human label is assigned, balanced)
- *   ?part=rate       SESSION 2
+ *   ?part=rate       PART 2
  *       consent -> Prolific ID (the page looks up that participant's description and reply) ->
  *       label page -> the reply under its label -> ratings (feeling heard, accuracy, understood,
  *       connection) -> loneliness/emotions -> mind perception -> AI attitudes -> suspicion ->
  *       demographics -> feedback -> debrief
  *
  * Testing IDs (EXPERIMENT.test_ids) skip the lookup and show a built-in sample, so a TA can try
- * Session 2 without any Session 1 data. See docs/study-design.md for the mapping to the paper.
+ * Part 2 without any Part 1 data. See docs/study-design.md for the mapping to the paper.
  */
 
 // ---------------------------------------------------------------------------
@@ -26,9 +26,9 @@
 window.TEMPLATE_VERSION = "0.1.0";
 
 const EXPERIMENT = {
-  // Firestore path. Session 2 (rate) saves under experiments/<base_id>/..., Session 1 (describe)
+  // Firestore path. Part 2 (rate) saves under experiments/<base_id>/..., Part 1 (describe)
   // under experiments/<base_id>-describe/.... base_id must match `experiment_id` in
-  // writeup/replication-report.qmd (the report analyses Session 2). Change it when you move from
+  // writeup/replication-report.qmd (the report analyses Part 2). Change it when you move from
   // Pilot A to real data collection.
   base_id: "yin2024-label-pilot-a",
 
@@ -38,7 +38,7 @@ const EXPERIMENT = {
   // Also store the complete jsPsych dataset on the participant document at the end.
   save_full_data_at_end: true,
 
-  // Prolific completion codes, one per session (from each Prolific study page). If set,
+  // Prolific completion codes, one per part (from each Prolific study page). If set,
   // participants are redirected to Prolific when they finish. Leave empty for testing.
   completion_codes: { describe: "", rate: "" },
 
@@ -54,9 +54,9 @@ const EXPERIMENT = {
   min_description_words: 30,
 
   // Rough length shown to participants, in minutes. Update both from the Pilot A medians.
-  minutes: { describe: 5, rate: 10 },
+  minutes: { describe: 2, rate: 5 },
 
-  // Testing IDs (compared without regard to case). In Session 2 they skip the lookup and show the
+  // Testing IDs (compared without regard to case). In Part 2 they skip the lookup and show the
   // built-in sample description and reply below, with the label given here ("random" picks one).
   // Their participant records are flagged is_test = true, and scripts/generate-replies.js and the
   // report's analysis both ignore them. Give these to TAs; real Prolific IDs never look like this.
@@ -67,7 +67,7 @@ const EXPERIMENT = {
   },
 };
 
-// Shown to testing IDs in Session 2 instead of a stored reply (not real participant data).
+// Shown to testing IDs in Part 2 instead of a stored reply (not real participant data).
 const SAMPLE_DESCRIPTION =
   "I have been going back and forth about whether to leave my current job for an offer in another city. " +
   "My manager has been supportive, but I feel stuck, and my partner would have to move with me, which worries me a lot.";
@@ -93,8 +93,8 @@ const USE_EMULATOR = URL_PARAMS.get("emulator") === "1";
 // `?chunk_size=N` overrides the setting above; used by the test suite to exercise chunked writes.
 const CHUNK_SIZE =
   Number(URL_PARAMS.get("chunk_size")) || EXPERIMENT.chunk_size;
-// `?part=describe` (or 1) is Session 1, `?part=rate` (or 2) is Session 2. Without it a small page
-// links to both, so a participant can never land in the wrong session by accident.
+// `?part=describe` (or 1) is Part 1, `?part=rate` (or 2) is Part 2. Without it a small page
+// links to both, so a participant can never land in the wrong part by accident.
 const PART =
   { 1: "describe", describe: "describe", 2: "rate", rate: "rate" }[URL_PARAMS.get("part")] || null;
 if (PART) {
@@ -114,10 +114,10 @@ function showLanding() {
   };
   document.body.innerHTML =
     '<div id="landing" class="jspsych-content" style="max-width:640px;margin:12vh auto;font:16px/1.6 system-ui,sans-serif;">' +
-    "<h2>Which session?</h2>" +
-    "<p>Please use the exact link you were given. If you are testing, choose a session:</p>" +
-    '<ul><li><a href="' + link("describe") + '">Session 1: describe a situation</a></li>' +
-    '<li><a href="' + link("rate") + '">Session 2: rate a response</a> (enter a testing ID: ' +
+    "<h2>Which part?</h2>" +
+    "<p>Please use the exact link you were given. If you are testing, choose a part:</p>" +
+    '<ul><li><a href="' + link("describe") + '">Part 1: describe a situation</a></li>' +
+    '<li><a href="' + link("rate") + '">Part 2: rate a response</a> (enter a testing ID: ' +
     Object.keys(EXPERIMENT.test_ids).join(", ") + ")</li></ul>" +
     '<p>Questions: <a href="mailto:' + EXPERIMENT.contact_email + '">' + EXPERIMENT.contact_email + "</a></p></div>";
 }
@@ -226,7 +226,7 @@ function showLanding() {
 
   jsPsych.data.addProperties({ session: PART });
 
-  // Shared state. In Session 2 the lookup fills `reply` with the participant's stored description,
+  // Shared state. In Part 2 the lookup fills `reply` with the participant's stored description,
   // reply and label ("ai" or "human"); everything that depends on the label reads it from here at
   // run time, because the label is not known when the page loads.
   const state = { pid: null, reply: null };
@@ -443,7 +443,7 @@ function showLanding() {
     data: { task: "emotions_self" },
   };
 
-  // Session 1 ends here: no reply, no label, no debrief yet (the reveal comes at the end of Session 2).
+  // Part 1 ends here: no reply, no label, no debrief yet (the reveal comes at the end of Part 2).
   const thanksDescribe = {
     type: jsPsychHtmlButtonResponse,
     stimulus: `<h2>Thank you</h2>
@@ -454,7 +454,7 @@ function showLanding() {
   };
 
   // -------------------------------------------------------------------------
-  // 5. Session 2: find the participant's stored reply, then the label manipulation
+  // 5. Part 2: find the participant's stored reply, then the label manipulation
   // -------------------------------------------------------------------------
   // Looks up the description, reply and label stored for state.pid. Testing IDs use the built-in
   // sample instead. Never throws: a failure just means "not found" and the participant can retry.
@@ -534,13 +534,13 @@ function showLanding() {
   };
 
   // The stored reply, shown as a chat transcript under the assigned label. Nothing is "typed" live:
-  // the reply was written before this session, and is identical in kind for both labels.
+  // the reply was written before this part, and is identical in kind for both labels.
   const replyView = {
     type: jsPsychHtmlButtonResponse,
     stimulus: () => ChatUI.transcriptHtml(state.reply.description, state.reply.reply_text, state.reply.condition),
     choices: ["Continue to questions"],
     // Do not save the page HTML: it contains the participant's description, which already lives in
-    // Session 1 (reply_text below is the reply, saved on purpose).
+    // Part 1 (reply_text below is the reply, saved on purpose).
     save_trial_parameters: { stimulus: false },
     data: { task: "reply" },
     on_finish: (data) => {

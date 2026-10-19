@@ -4,7 +4,7 @@
  *
  *   jsPsychChatDescribe  the participant types a description of a complex situation into a chat
  *                        box (replaces the original study's audio recording, Part 1).
- *   jsPsychAsyncStep     shows a message while an async function runs (the Session 2 reply lookup).
+ *   jsPsychAsyncStep     shows a message while an async function runs (the Part 2 reply lookup).
  *
  * Replies are generated beforehand by scripts/generate-replies.js; ChatUI.transcriptHtml shows one
  * under the responder identity given by the label condition.
@@ -44,8 +44,8 @@
       ${bubbleHtml("bot", r.name, r.avatar, withBreaks(reply))}</div>`;
   }
 
-  // The Session 2 reply screen: a header naming the responder, then the participant's message and the
-  // reply as a chat transcript. Static: the reply was written before the session.
+  // The Part 2 reply screen: a header naming the responder, then the participant's message and the
+  // reply as a chat transcript. Static: the reply was written before this part.
   function transcriptHtml(description, reply, kind) {
     const r = RESPONDERS[kind];
     return `<div class="chat" id="chat-reply" data-responder="${escapeHtml(kind)}">
@@ -144,7 +144,7 @@
   };
 
   // -------------------------------------------------------------------------------------------
-  // Async step: show a message while an async function runs, then continue. Used for the Session 2
+  // Async step: show a message while an async function runs, then continue. Used for the Part 2
   // lookup of the participant's stored reply. `run` returns the data to record (it must not
   // contain anything private) and should not throw.
   // -------------------------------------------------------------------------------------------
