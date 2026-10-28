@@ -1,0 +1,4 @@
+- source: replication-report.qmd
+  posit-connect-cloud:
+    - id: 01a10ac6-bad9-447c-574a-daf150f5ee8d
+      url: https://connect.posit.cloud/yutong-zhang/content/01a10ac6-bad9-447c-574a-daf150f5ee8d

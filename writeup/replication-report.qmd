@@ -47,9 +47,9 @@ exclusion rule, and the key comparison.
 library(tidyverse)
 library(jsonlite)
 
-# Must match EXPERIMENT.id in experiment.js, and the --experiment you passed to the export.
+# Must match the --id you passed to qualtrics/export-data.js (data/raw/<id>/responses.csv).
 # Phase 2 runs under its own id, so its data never mix with Phase 1's.
-experiment_id        <- "yin2024-label-pilot-a"
+experiment_id        <- "yin2024-label-pilot-b"
 experiment_id_phase2 <- "yin2024-label-phase2"
 ```
 
@@ -97,8 +97,8 @@ original_measures <- tribble(
 ## Project links
 
 - **Original paper:** Yin, Y., Jia, N., & Wakslak, C. J. (2024). AI can help people feel heard, but an AI label diminishes this impact. *Proceedings of the National Academy of Sciences, 121*(14), e2319112121. <https://doi.org/10.1073/pnas.2319112121>
-- **Preregistration:** [OSF registration](https://osf.io/XXXXX) *(registered YYYY-MM-DD, before final data collection)*
-- **Live experiment:** <https://psych251.github.io/yin2024/> (take the study exactly as participants did)
+- **Preregistration:** [OSF registration](https://osf.io/6adbcdac84e3f219e459e045) *(registered YYYY-MM-DD, before final data collection)*
+- **Live experiment:** <https://stanforduniversity.qualtrics.com/jfe5/preview/previewId/2e58799d-82a5-48c9-99ec-d3e064b40ecd/SV_d0Cu80obbYNC9Vk?Q_CHL=preview&Q_SurveyVersionID=current> (take the study exactly as participants did)
 - **Repository:** <https://github.com/psych251/yin2024> (experiment code, data, and this report)
 :::
 
@@ -106,7 +106,7 @@ original_measures <- tribble(
 
 | Tool and model | What it was used for | How you checked the output |
 |---|---|---|
-| Claude Code (claude-sonnet-5-5)* | *Review and understand the existing codebase and project setup, implement the experiment, and review and validate the study design; update the analysis code;* | Test the experiment myself and with pilot participants; compare the study design with the original paper;
+| Claude Code (claude-sonnet-5-5)* | *Review and understand the existing codebase and project setup, implement the experiment, and review and validate the study design; update the analysis code; Review and check my study design* | Test the experiment myself and with pilot participants; compare the study design with the original paper;
 
 I wrote all of the text in this report myself. AI tools were not used to write, rewrite or
 paraphrase it, and were not used to generate, alter, or impute any participant data. I take full
@@ -130,86 +130,55 @@ adapt its code and say so in the caption.
 #| code-summary: "Show the analysis code (shared by Phase 1 and Phase 2)"
 # Load one phase's exported data and apply the exclusion rules of the analysis plan. Returns NULL if
 # that phase has not been exported yet, which is how every section below knows to skip itself.
+# The data come from Qualtrics (qualtrics/export-data.js): one row per response, numeric answers only.
+# Qualtrics preview and test responses are already dropped by the export script.
 read_phase <- function(id) {
-  dir <- file.path("..", "data", "raw", id)
-  if (!all(file.exists(file.path(dir, c("participants.csv", "trials.csv"))))) return(NULL)
-  participants <- read_csv(file.path(dir, "participants.csv"), show_col_types = FALSE)
-  # Testing IDs (EXPERIMENT.test_ids in experiment.js, given to TAs) are flagged is_test = TRUE.
-  if (!"is_test" %in% names(participants)) participants$is_test <- FALSE
-  n_test <- sum(coalesce(as.logical(participants$is_test), FALSE))
-  participants <- participants |> filter(!coalesce(as.logical(is_test), FALSE))
-  trials       <- read_csv(file.path(dir, "trials.csv"), show_col_types = FALSE)
-  errors_path  <- file.path(dir, "errors.csv")
-  errors <- if (file.exists(errors_path)) read_csv(errors_path, show_col_types = FALSE) else tibble()
+  path <- file.path("..", "data", "raw", id, "responses.csv")
+  if (!file.exists(path)) return(NULL)
+  d <- read_csv(path, show_col_types = FALSE)
 
-  # A participant who stopped before a screen has no row, hence no column, for its fields.
-  for (col in c("consented", "condition", "feeling_heard", "response_accuracy",
-                "responder_understood", "connection")) {
-    if (!col %in% names(trials)) trials[[col]] <- NA
+  heard_items <- c("heard_understood", "heard_validated", "heard_affirmed", "heard_seen",
+                   "heard_accepted", "heard_cared_for")
+  acc_items   <- c("acc_captures", "acc_summarizes")
+  und_items   <- c("und_knew", "und_understood")
+  conn_items  <- c("conn_close", "conn_connected", "conn_trust")
+  # A participant who stopped before a screen has no answers, so make sure every column exists.
+  for (col in c("Finished", "consent", "label", "desc_words", "reply_n_words", "tech_issues",
+                heard_items, acc_items, und_items, conn_items)) {
+    if (!col %in% names(d)) d[[col]] <- NA
   }
+  # A composite is the mean of its items, and missing unless every item was answered.
+  scale_mean <- function(df, cols) {
+    m <- as.matrix(df[, cols])
+    ifelse(rowSums(is.na(m)) == 0, rowMeans(m), NA_real_)
+  }
+  d <- d |>
+    mutate(completed = coalesce(as.numeric(Finished) == 1, FALSE),
+           consented = coalesce(as.numeric(consent) == 1, FALSE),
+           condition = label,
+           feeling_heard        = scale_mean(d, heard_items),
+           response_accuracy    = scale_mean(d, acc_items),
+           responder_understood = scale_mean(d, und_items),
+           connection           = scale_mean(d, conn_items))
 
-  complete <- participants |> filter(completed)
-
-  # Exclusion rules (the analysis plan): a participant is analysed only if they completed both parts,
-  # gave valid consent, and answered all six feeling-heard items (so the mean can be computed); the
-  # Part 1 description must also have at least 30 words (the interface already refuses shorter
-  # ones). Each participant is counted under the FIRST rule they fail, in the order below.
+  # Exclusion rules (the analysis plan): a participant is analysed only if they finished the survey,
+  # gave valid consent, wrote a description of at least 30 words (the interface already refuses shorter
+  # ones), and answered all six feeling-heard items (so the mean can be computed). Each participant
+  # is counted under the FIRST rule they fail, in the order below.
   min_words <- 30
-
-  # Part 1 (describe): the "-describe" export of this phase, if it is on this machine. It is
-  # gitignored because it holds what participants typed; without it the three Part 1 rules cannot
-  # be checked here and the Data preparation table says so.
-  part1_dir <- file.path("..", "data", "raw", paste0(id, "-describe"))
-  part1 <- NULL
-  if (all(file.exists(file.path(part1_dir, c("participants.csv", "trials.csv"))))) {
-    p1p <- read_csv(file.path(part1_dir, "participants.csv"), show_col_types = FALSE)
-    p1t <- read_csv(file.path(part1_dir, "trials.csv"), show_col_types = FALSE)
-    if (!"is_test" %in% names(p1p)) p1p$is_test <- FALSE
-    for (col in c("consented", "n_words")) if (!col %in% names(p1t)) p1t[[col]] <- NA
-    by_p1 <- function(d, ...) d |> group_by(describe_participant_id = participant_id) |> summarise(..., .groups = "drop")
-    part1 <- p1p |>
-      filter(!coalesce(as.logical(is_test), FALSE)) |>
-      transmute(describe_participant_id = participant_id, p1_completed = as.logical(completed)) |>
-      left_join(by_p1(filter(p1t, task == "consent"), p1_consented = any(as.logical(consented), na.rm = TRUE)),
-                by = "describe_participant_id") |>
-      left_join(by_p1(filter(p1t, task == "describe"), p1_words = suppressWarnings(max(as.numeric(n_words), na.rm = TRUE))),
-                by = "describe_participant_id")
-  }
-  if (!"describe_participant_id" %in% names(participants)) participants$describe_participant_id <- NA_character_
-
-  scores <- trials |>
-    filter(task == "ratings") |>
-    transmute(participant_id, condition,
-              feeling_heard        = as.numeric(feeling_heard),
-              response_accuracy    = as.numeric(response_accuracy),
-              responder_understood = as.numeric(responder_understood),
-              connection           = as.numeric(connection))
-  consent2 <- trials |> filter(task == "consent") |>
-    group_by(participant_id) |> summarise(consented2 = any(as.logical(consented), na.rm = TRUE), .groups = "drop")
-  status <- participants |>
-    left_join(consent2, by = "participant_id") |>
-    left_join(select(scores, participant_id, feeling_heard), by = "participant_id")
-  if (is.null(part1)) {
-    status <- status |> mutate(p1_completed = NA, p1_consented = NA, p1_words = NA_real_)
-  } else {
-    status <- status |> left_join(part1, by = "describe_participant_id")
-  }
-  have_p1 <- !is.null(part1)
-  status <- status |>
+  status <- d |>
     mutate(reason = case_when(
-      !coalesce(completed, FALSE)                              ~ "Did not complete Part 2",
-      !coalesce(consented2, FALSE)                             ~ "No valid consent in Part 2",
-      have_p1 & !coalesce(p1_completed, FALSE)                 ~ "Part 1 not completed (or not linked to a Part 1 record)",
-      have_p1 & !coalesce(p1_consented, FALSE)                 ~ "No valid consent in Part 1",
-      have_p1 & coalesce(p1_words, 0) < min_words              ~ "Part 1 description under 30 words",
-      is.na(feeling_heard)                                     ~ "Missing one of the six feeling-heard items",
-      TRUE                                                     ~ "Analysed"))
-  keep <- status |> filter(reason == "Analysed") |> select(-feeling_heard)
-  scores <- scores |> filter(participant_id %in% keep$participant_id)
+      !completed                                         ~ "Did not finish the survey",
+      !consented                                         ~ "No valid consent",
+      coalesce(as.numeric(desc_words), 0) < min_words    ~ "Description under 30 words",
+      is.na(feeling_heard)                               ~ "Missing one of the six feeling-heard items",
+      TRUE                                               ~ "Analysed"))
+  keep <- status |> filter(reason == "Analysed")
+  scores <- keep |> select(participant_id, condition, feeling_heard, response_accuracy,
+                           responder_understood, connection)
 
-  list(participants = participants, trials = trials, errors = errors,
-       complete = complete, keep = keep, scores = scores, status = status,
-       part1_checked = have_p1, n_test = n_test,
+  list(participants = d, complete = filter(d, completed), keep = keep, scores = scores, status = status,
+       n_test = 0L,  # preview / test responses are removed by qualtrics/export-data.js before this file is written
        n_no_score = sum(status$reason == "Missing one of the six feeling-heard items"))
 }
 
@@ -335,19 +304,19 @@ bind_rows(
 
 ## Introduction
 
-In this project, I replicated the paper "AI can help people feel heard, but an AI label diminishes this impact" by Yin et al. (2024). In the original paper, the researchers found that 1) AI-generated responses made people feel more heard than human-generated responses; 2) however, people felt less heard when they believed that a response came from AI rather than from a human. In this project, I would focus on replicating the second finding to study the AI label effect.
+In this project, I replicated the label effect examined in "AI can help people feel heard, but an AI label diminishes this impact" by Yin et al. (2024). In the original paper, the researchers found that 1) AI-generated responses made people feel more heard than human-generated responses; 2) however, people felt less heard when they believed that a response came from AI rather than from a human. In this project, I would focus on replicating the second finding to study the AI label effect.
 
-This study closely fits my research interests because my research mainly focuses on how people interact with AI systems, especially in social and relational contexts. My recent work has focused on the social uses of AI chatbots, and "feeling heard" is closely related to how people use AI systems socially. I am especially interested in the label effect because recently people are increasingly integrating AI systems into their daily lives, at the same time, there is also growing debate about how people perceive the warm and supportive tone of these systems. For example, recent work has raised concerns about behaviors such as sycophancy. This makes me interested in whether simply knowing that a response comes from AI will still remain an important factor shaping people's perceptions.
+This study closely fits my research interests because my research mainly focuses on how people interact with AI systems, especially in social and relational contexts. My recent work has focused on the social uses of AI chatbots, and "feeling heard" is closely related to how people use AI systems socially. I am especially interested in the label effect because recently people are increasingly integrating AI systems into their daily lives, at the same time, there is also growing debate about how people perceive the warm and supportive tone of these systems. For example, recent work has raised concerns about behaviors such as sycophancy. This makes me interested in whether simply knowing that a response comes from AI could be an significant factor shaping people's perceptions.
 
-The original study used a 2 (response source: human vs. AI) × 2 (label: human vs. AI) between-subjects design. Participants first described a complex situation they were dealing with. To answer the first question, participants randomly received responses written by humans or AI (GPT-4). To study the second question, these responses were further randomly labeled as human-generated or AI-generated when they were shown to the original participants. Therefore, this replication study would need to recruit an additional group of participants for human responses and tokens for the Large Language model resource to generate personalized AI responses. Therefore, this study would require a multi-stage design since participants need to return after the responses have been generated, which introduces additional risk of attrition between sessions. An alternative approach would be to only manipulate the response label while generating all the AI responses with a large language model (LLM). 
+The original study used a 2 (response source: human vs. AI) × 2 (label: human vs. AI) between-subjects design. Participants first described a complex situation they were dealing with. Participants then received responses written either by other humans or by AI (Bing chat with OpenAI GPT-4 model), which were independently labeled as human-generated or AI-generated. Considering the limited budget and the potential risk of participant attrition in a multi-session design, I simplified the replication to a two-condition between-subjects experiment, and I would only focus on the part of the second research question in the original paper, the label effect specifically for AI-generated responses. All participants received AI-generated responses for their shared complex condition. However, the response would be randomly labeled as AI-generated or human-generated. For current setting, the entire experiment was conducted in a single session, allowing participants to describe their sitaution, receiving the response, and the self-reported survey questions align each step follow the original study setup.
 
-I’d like to preregister a linear regression comparing "feeling heard" scores between the AI-label and human-label conditions as the key statistical test. Consistent with the findings of the original paper, I hypothesize that participants in the AI-label condition will report feeling less heard than those in the human-label condition. Considering the possible extension, I am also interested in the effects of the model behaviors. The original study only tested with a fixed model and a fixed prompt, so I'd be interested in comparing responses generated by different models and different prompting strategies. For example, I could test whether explicitly prompting a model to respond more like a human changes how participants evaluate the response and has a different AI label effect.
+I preregistered a two-sided Welch's t-test comparing "feeling heard" scores between the AI-label and human-label conditions as the key statistical test. Consistent with the findings of the original paper, I hypothesized that participants in the AI-label condition would report feeling less heard than those in the human-label condition. 
 
 ## Methods
 
 ### Power analysis
 
-In the original paper, the authors reported Cohen's $d = 0.52$ for the labeling effect on feeling heard among participants receiving AI-generated responses. I calculated the sample sizes to achieve 80%, 90%, and 95% statistical power to detect the effect size reported in the original paper, as well as the sample size required using the 2.5× original sample size approach (Simonsohn, 2015; Experimentology §10.4).Given the course's budget constraints, I plan to recruit 146 participants in total (73 per condition) to provide about 95% power to detect the original effect size.
+In the original paper, the authors reported Cohen's $d = 0.52$ for the labeling effect on feeling heard among participants receiving AI-generated responses. I calculated the sample sizes to achieve 80%, 90%, and 95% statistical power to detect the effect size reported in the original paper, as well as the sample size required using the 2.5× original sample size approach (Simonsohn, 2015; Experimentology §10.4). Given the course's budget constraints, I targeted a final sample of 146 participants (73 per condition) for analysis, providing approximately 88% power to detect the original effect size.
 
 ```{r}
 #| label: power
@@ -376,33 +345,33 @@ knitr::kable(power_rows, col.names = c("Power", "N per label condition", "N tota
 
 ### Planned sample
 
-We plan to recruit 146 participants through Prolific. Consistent with the original study, I would restrict to US residents aged 18 or older who are native English speakers. Data collection will stop once 146 participants have completed the study and passed the exclusion criteria. The study will include two parts, which Part 1 takes approximately 2 minutes and Part 2 takes approximately 5 minutes. Participants will be compensated \$1.40 (\$0.40 and \$1.00) for the study (\$12/h).
+We targeted 146 participants for the final analysis and planned to recruit through Prolific. Consistent with the original study, we would restrict participants to US residents who reported English as their first language and were at least 18 years old. Data collection would stop once we received 146 valid submissions that all met the inclusion criteria. The study was conducted in a single session, with a median completion time of approximately 7 minutes in the pilot. The compensation was \$1.40 per participant, equivalent to about \$12 per hour based on the pilot median, which meets Prolific's recommended payment.
 
 
 ### Materials
 
-First, participants will be asked to describe a complex situation they are currently experiencing, following the exact same instructions as in the original paper: "Please take a moment to think about a complex situation that you are grappling with. This might involve a challenging decision or issue in either your personal or professional life, characterized by numerous interwoven factors. You might be dealing with an interpersonal conflict involving colleagues, family members, or friends, and are uncertain about the best course of action. You might be wrestling with a profound question or thought."
+First, participants were asked to describe a complex situation they were currently experiencing, following the exact same instructions as in the original paper: "Please take a moment to think about a complex situation that you are grappling with. This might involve a challenging decision or issue in either your personal or professional life, characterized by numerous interwoven factors. You might be dealing with an interpersonal conflict involving colleagues, family members, or friends, and are uncertain about the best course of action. You might be wrestling with a profound question or thought."
 
-Since our replication focuses on the labeling effect among AI-generated responses, all responses will be generated using a large language model (LLM) through an API call with the following prompt: "A person you otherwise don't know described the following complex situation they have been dealing with. Please respond to what they said in a way that makes them feel understood. Keep your response to 57 words. '[description]'" We set the target response length to 57 words, which is the median of the six batch-level median response lengths reported in the original paper.
+Since my replication focused on the labeling effect among AI-generated responses, all responses were generated using a large language model (LLM) through an API call with the following prompt, following the original paper: "A person you otherwise don't know described the following complex situation they have been dealing with. Please respond to what they said in a way that makes them feel understood. Keep your response to 57 words. '[description]'" we set the target response length to 57 words, which is the median of the six batch-level median response lengths reported in the original paper.
 
-The remaining survey questions follow the original study in both wording and order, with minor adjustments to references to the responder. In Part 1, after describing their complex situation, participants will rate the extent to which they experienced six emotions (happiness, sadness, fear, anger, surprise, and disgust) on a 7-point scale. In Part 2, after reading an AI-generated response randomly labeled as either AI-generated or human-written, participants will complete the same outcome measures as in the original study, including feeling heard, perceived response accuracy, perceived responder understanding, and feeling of connection to the responder. Participants will then answer questions about their emotional state, loneliness, mind perception of AI, and familiarity with, use of, and attitudes toward AI. Finally, participants will complete a question assessing their suspicion about the source of the response.
+The remaining survey questions mainly followed the original study in both wording and order, with minor adjustments to reflect the updated AI systems and survey format. After describing their complex situation, participants rated the extent to which they experienced six emotions (happiness, sadness, fear, anger, surprise, and disgust) on a 7-point scale before being assigned to a label condition. Participants were then randomly assigned to either the AI-label or human-label condition and received instructions describing the supposed identity of their conversation partner. In the AI-label condition, participants were told: "Next, you will have a live chat with an AI chatbot. What you just wrote will be sent to the chatbot, and we will ask the chatbot to respond to what you said." In the human-label condition, participants were told: "Next, you will have a live chat with another participant on Prolific who is taking part in this study right now. What you just wrote will be sent to the participant, and we will ask the participant to respond to what you said." The wording differed only in how the response source was described: "the AI chatbot's response" in the AI-label condition and "another Prolific participant's response" in the human-label condition. Both versions ended with the same statement: "We are interested in your impressions of the response." After receiving the AI-generated response, participants completed the same outcome measures as in the original study, including feeling heard, perceived response accuracy, perceived responder understanding, and feeling of connection to the responder. Participants then answered questions about their emotional state, including their current emotions, loneliness, and questions about the perception and usage toward AI. We replaced references to "Bing Chat" in the original study with the more general term "AI chatbot." Finally, participants completed questions measuring their suspicion about the source of the response, and demographic questions. At the end, we would provide the debriefing of the study and tell everyone that all the messages were generated by an AI system. 
 
 
 
 ### Procedure
 
-We adapt the procedure from the original study; because we focus only on the labeling effect, we conduct the experiment in two parts instead of three. In Part 1, participants will first provide informed consent and enter their Prolific ID. They will then read the study instructions and be asked to describe a complex situation they are currently experiencing. Unlike the original study, which asked participants to record an audio description, participants will type their descriptions in a chat interface. After submitting their descriptions, participants will rate the emotions they experienced in the situation.
+We adapted the procedure from the original study. However, unlike the original study, which involved three stages and required participants to return to read their responses, our replication was conducted entirely in a single session. Participants first provided informed consent and entered their Prolific ID. They then read the study instructions and were asked to describe a complex situation they were currently experiencing. Unlike the original study, which asked participants to record an audio description, participants typed their descriptions into a text box on the survey page. To get enough information, we required users to describe their situation in at least 30 words. After submitting their descriptions, participants rated the six emotions they experienced in the situation.
 
-After collecting all responses from Part 1, we will generate an AI response to each participant's description using an LLM. Participants will then be randomly assigned to one of two conditions, in which the response is labeled as either AI-generated or human-written.
+After completing the emotion ratings, participants were randomly assigned to either the AI-label or human-label condition using Qualtrics, with approximately equal numbers of participants assigned to each condition. Then, depending on their assigned condition, we told participants that they would have a live chat with either an AI chatbot or another Prolific participant currently taking part in the study. On the following page, participants would chat with an embedded chat interface, which included a message describing the complex situation the participants experienced. Each participant's description was sent to the same LLM using the same prompt, regardless of the assigned label, and one personalized response was generated through an API call when the chat page loaded. The response appeared after a 20–25-second wait in both conditions to make the human-labeled response appear more realistic.
 
-In Part 2, participants will be invited back to read the response to their original description, presented with their assigned label. They will then complete the same outcome measures questions as in the original study, followed by questions about their emotions, loneliness, mind perception, AI attitudes, and suspicion about the response's source. Finally, participants will provide demographic information and receive a debrief explaining that all responses were AI-generated.
+After reading the response, participants completed the outcome measures, including feeling heard, perceived response accuracy, perceived responder understanding, and connection to the responder. They then answered questions about their current loneliness and 19 emotions, followed by trait loneliness, mind perception of AI, and familiarity with, use of, and attitudes toward AI chatbots. Next, participants completed a question measuring their suspicion about the response's source, demographic questions, instruction clarity, and optional comments. Finally, participants received a debrief explaining that all responses were AI-generated regardless of the assigned label.
 
-Overall, Part 1 is expected to take about 2 minutes, and Part 2 about 5 minutes.
+The entire study was completed in a single session. In the pilot, the median completion time was approximately 7 minutes.
 
 
 ### Analysis plan
 
-First, we will exclude participants who do not complete both parts of the study, do not provide valid consent, or have missing responses to any of the six feeling-heard questions. Following the original study, participants must provide a sufficiently detailed description of their situation. In our replication, we require a minimum of 30 words when participants describe their experiment in Part 1.
+First, we will exclude participants who do not complete the survey, do not provide valid consent, or have missing responses to any of the six feeling-heard questions. Following the original study, participants must provide a sufficiently detailed description of their situation. In our replication, we require a minimum of 30 words when participants describe their situation.
 
 Our primary analysis will examine whether labeling an AI-generated response as AI rather than human affects participants' feeling of being heard. Following the original study, we will calculate the mean of the six feeling-heard items for each participant. We will then conduct a two-sided Welch's t-test comparing the AI-label and human-label conditions, using $\alpha = 0.05$. Considering the original study's results, we hypothesize that participants in the AI-label condition will report lower levels of feeling heard than those in the human-label condition. We will report the difference in means, its 95% confidence interval, and Cohen's $d$.
 
@@ -411,13 +380,15 @@ In addition, we will conduct exploratory analyses examining the effect of labeli
 
 ### Differences from the original study
 
-There are four main differences. First, I focus on the labeling effect among AI-generated responses. While the original study used a 2 × 2 design manipulating both the response source (AI vs. human) and the response label (AI vs. human), in this project all responses will be generated by AI but randomly labeled as either AI-generated or human-written.
+There are five main differences. First, we focused on the labeling effect among AI-generated responses. While the original study used a 2 × 2 design manipulating both the response source (AI vs. human) and the response label (AI vs. human), in this project all responses were generated by AI but randomly labeled as either AI-generated or human-written. Participants were randomly assigned to the two label conditions after completing the initial emotion ratings, with approximately equal numbers assigned to each condition.
 
-Second, we use a different LLM instead of GPT-4 through Bing Chat to generate responses, since there is no public access to GPT-4 through Bing Chat anymore. However, we follow the same prompt as the original study to maintain consistency in how responses are generated.
+Second, we simplified the original three-part procedure into a single-session experiment. Instead of returning the following day to receive a response, participants received an AI-generated response in real time through an embedded chat interface. The interface displayed either a human or AI label and the response to participants' situation. Before showing the response, we intentionally had a 20- to 25-second waiting period in both conditions to make the human-labeled interaction appear more realistic. In the human-labeled condition, participants were told that another Prolific participant was taking part in the study at the same time and would write a response to their situation.
 
-Third, we ask participants to type their descriptions of complex situations rather than record audio messages, as in the original study. We require participants to provide at least 30 words and disable pasting to encourage them to describe their own experiences.
+Third, we used GPT-6-luna instead of GPT-4 through Bing Chat, since it was no longer publicly available. Responses were generated through live API calls using the Vegapunk server. We followed the original study's response-generation prompt and asked the model to generate the response to about 57 words, which is consistent with the original paper.
 
-In addition, we make minor wording adjustments to reflect changes in AI platforms. For example, we replace references to "Bing Chat" with "an AI chatbot" and update the AI familiarity and attitude questions to refer to AI chatbots more generally, including ChatGPT, Copilot, and Gemini. The remaining outcome measures follow the original study.
+Fourth, different from the original study, we asked participants to type their descriptions of complex situations rather than record an audio message. We required participants to provide at least 30 words and disabled pasting to encourage them to describe their own experience.
+
+Fifth, we made several adjustments to the survey wording and measures. Instead of references to "Bing Chat" in the original survey, we used the more general term "AI chatbot." The primary outcome measures, including feeling heard, response accuracy, responder understanding, and connection, all remain consistent with the original study.
 
 
 ### Methods addendum (post data collection)
@@ -442,9 +413,9 @@ if (!have_data) {
     "## No Phase 1 data yet\n\n",
     "There are no exported data for `", experiment_id, "` yet, so the sample and results ",
     "sections are skipped. This is expected before data collection. Export with ",
-    "`npm run export -- --experiment ", experiment_id, " --key <path to your key>` and render again. ",
+    "`node qualtrics/export-data.js --id ", experiment_id, "` and render again. ",
     "If you have exported, check that `experiment_id` at the top of this file matches ",
-    "`EXPERIMENT.id` in `experiment.js`.\n",
+    "the `--id` you exported with.\n",
     ":::\n", sep = "")
 }
 ```
@@ -455,8 +426,6 @@ if (!have_data) {
 # Loaded and excluded by read_phase(), under Key statistics, so Phase 1 and Phase 2 share one
 # exclusion rule.
 participants  <- phase1$participants
-trials        <- phase1$trials
-errors        <- phase1$errors
 complete      <- phase1$complete
 keep          <- phase1$keep
 n_no_score   <- phase1$n_no_score
@@ -472,6 +441,7 @@ bind_rows(
   keep         |> mutate(step = "Passed exclusion criteria")
 ) |>
   mutate(step = factor(step, levels = funnel_levels)) |>
+  mutate(condition = coalesce(condition, "not assigned")) |>
   count(step, condition, .drop = FALSE) |>
   pivot_wider(names_from = condition, values_from = n, values_fill = 0) |>
   mutate(Total = rowSums(across(-step))) |>
@@ -480,25 +450,19 @@ bind_rows(
 ```
 
 ```{r}
-#| label: return-rate
+#| label: attrition-steps
 #| eval: !expr have_data
-# Part 1 -> Part 2: how many of the people who finished Part 1 came back. Needs the Part 1 export
-# (data/raw/<id>-describe/), which is gitignored because it holds what participants typed; on a
-# machine without it this chunk says so and skips itself.
-p1_path <- file.path("..", "data", "raw", paste0(experiment_id, "-describe"), "participants.csv")
-if (file.exists(p1_path) && "describe_participant_id" %in% names(participants)) {
-  p1 <- read_csv(p1_path, show_col_types = FALSE)
-  if (!"is_test" %in% names(p1)) p1$is_test <- FALSE
-  p1 <- p1 |> filter(!coalesce(as.logical(is_test), FALSE), completed)
-  started_p2   <- participants |> filter(describe_participant_id %in% p1$participant_id)
-  completed_p2 <- started_p2 |> filter(completed)
-  tibble(Step = c("Part 1: completed", "Part 2: started", "Part 2: completed"),
-         `Participants` = c(nrow(p1), n_distinct(started_p2$describe_participant_id),
-                            n_distinct(completed_p2$describe_participant_id))) |>
-    knitr::kable(caption = "Return from Part 1 to Part 2 (distinct Part 1 participants).")
-} else {
-  message("Part 1 export not found (data/raw/", experiment_id, "-describe/): return rate not computed.")
-}
+# Where participants dropped out, step by step (single session, so this replaces a session-to-session
+# return rate). A step counts a participant if they reached it, in the order of the survey.
+participants |>
+  summarise(`Started` = n(),
+            `Consented` = sum(consented),
+            `Wrote a description` = sum(!is.na(desc_words)),
+            `Were assigned a label` = sum(!is.na(condition)),
+            `Reached the reply` = sum(!is.na(reply_n_words)),
+            `Finished` = sum(completed)) |>
+  pivot_longer(everything(), names_to = "Step", values_to = "Participants") |>
+  knitr::kable(caption = "Participants reaching each step of the survey.")
 ```
 
 ```{r}
@@ -517,6 +481,20 @@ cat("\n")
 ```
 
 ```{r}
+#| label: completion-time
+#| eval: !expr have_data
+# How long the survey took (the original reported median completion times of 4.6, 4.5 and 5 minutes for its
+# three parts). Qualtrics records the start-to-finish duration in seconds.
+completers <- participants |> filter(completed)
+if (nrow(completers) > 0 && "Duration (in seconds)" %in% names(completers)) {
+  mins <- as.numeric(completers[["Duration (in seconds)"]]) / 60
+  tibble(`Completers` = length(mins), `Median minutes` = round(median(mins), 1),
+         `25th-75th percentile` = sprintf("%.1f to %.1f", quantile(mins, .25), quantile(mins, .75))) |>
+    knitr::kable(caption = "Time from start to finish of the survey (completers).")
+}
+```
+
+```{r}
 #| label: demographics
 #| eval: !expr have_data
 #| results: asis
@@ -524,26 +502,25 @@ cat("\n")
 # for all 455 recipients (AI and human responses together): gender 221 women, 227 men,
 # 6 non-binary, 1 did not report; race/ethnicity 343 White, 55 Black, 26 mixed race, 15 Asian, 11 Hispanic,
 # 3 other, 1 Native American, 1 did not report; mean age 43.82 (SD 13.12).
-paper_gender <- tibble(category = c("Woman", "Man", "Non-binary", "Prefer not to say"),
-                       paper_n  = c(221, 227, 6, 1))
+paper_gender <- tibble(category = c("Woman", "Man", "Non-binary", "Other", "Prefer not to say"),
+                       paper_n  = c(221, 227, 6, 0, 1))
 paper_race   <- tibble(category = c("White", "Black", "Asian", "Hispanic", "Native American",
                                     "Mixed race", "Other", "Prefer not to say"),
                        paper_n  = c(343, 55, 15, 11, 1, 26, 3, 1))
 
-demo <- trials |>
-  filter(task == "demographics", participant_id %in% keep$participant_id) |>
-  mutate(resp = map(response, ~ fromJSON(.x))) |>
-  transmute(
-    participant_id,
-    age    = map_dbl(resp, ~ as.numeric(.x$age %||% NA)),
-    gender = map_chr(resp, ~ as.character(.x$gender %||% NA)),
-    race   = map_chr(resp, ~ as.character(.x$race %||% NA))
-  )
+# Qualtrics stores a multiple-choice answer as the number of the choice, in the order the choices were listed
+# (qualtrics/build-survey.js, Demographics block).
+gender_levels <- c("Woman", "Man", "Non-binary", "Other", "Prefer not to say")
+race_levels   <- paper_race$category
+for (col in c("age", "gender", "race")) if (!col %in% names(keep)) keep[[col]] <- NA
+demo <- keep |>
+  transmute(participant_id,
+            age    = ifelse(between(as.numeric(age), 18, 120), as.numeric(age), NA_real_),
+            gender = gender_levels[as.integer(gender)],
+            race   = race_levels[as.integer(race)])
 
-# SurveyJS stores "Prefer not to say" as "none" and the "Other" option as "other".
 tabulate_category <- function(values, paper) {
-  recoded <- case_when(values == "none" ~ "Prefer not to say", values == "other" ~ "Other",
-                       is.na(values) ~ "Not answered", TRUE ~ values)
+  recoded <- ifelse(is.na(values), "Not answered", values)
   tibble(category = recoded) |>
     count(category, name = "this_study") |>
     full_join(paper, by = "category") |>
@@ -585,7 +562,7 @@ belong here even if they seem minor, together with the reason.
 
 
 ### Data preparation
-To run the analysis, I conducted four pilot sessions, with participants randomly assigned to either the human-labeled condition (n = 2) or the AI-labeled condition (n = 2).
+To run the analysis, we conducted four pilot sessions, with participants randomly assigned to either the human-labeled condition (n = 2) or the AI-labeled condition (n = 2).
 
 ```{r}
 #| label: data-prep-exclusions
@@ -593,15 +570,12 @@ To run the analysis, I conducted four pilot sessions, with participants randomly
 # How many records each exclusion rule of the analysis plan removed. The rules are applied in
 # read_phase() (under Key statistics); a participant is counted under the first rule they fail.
 st <- phase1$status
-rules <- c("Did not complete Part 2", "No valid consent in Part 2",
-           "Part 1 not completed (or not linked to a Part 1 record)", "No valid consent in Part 1",
-           "Part 1 description under 30 words", "Missing one of the six feeling-heard items")
-part1_rules <- rules[3:5]
+rules <- c("Did not finish the survey", "No valid consent", "Description under 30 words",
+           "Missing one of the six feeling-heard items")
 tibble(
-  Step = c("Testing IDs (dropped before anything else)", rules, "Analysed: AI label", "Analysed: human label"),
+  Step = c("Testing IDs (Qualtrics preview and test responses are dropped by the export)", rules, "Analysed: AI label", "Analysed: human label"),
   n = c(as.character(phase1$n_test),
-        map_chr(rules, ~ if (.x %in% part1_rules && !phase1$part1_checked) "not checked (Part 1 export not on this machine)"
-                         else as.character(sum(st$reason == .x))),
+        map_chr(rules, ~ as.character(sum(st$reason == .x))),
         as.character(sum(st$reason == "Analysed" & st$condition == "ai", na.rm = TRUE)),
         as.character(sum(st$reason == "Analysed" & st$condition == "human", na.rm = TRUE)))) |>
   knitr::kable(caption = "Data preparation: records removed by each exclusion rule, and the analysed N by label.")
@@ -615,15 +589,16 @@ tibble(
 #| eval: !expr have_data
 scores <- phase1$scores |> filter(!is.na(feeling_heard))
 
-if (all(c("ai", "human") %in% scores$condition) && all(table(scores$condition) >= 2)) {
+if (all(c("ai", "human") %in% scores$condition) && all(table(scores$condition) >= 2) &&
+    n_distinct(scores$feeling_heard) > 1) {
   # Welch's t test on the Feeling Heard composite; the first group listed is the AI label.
   print(t.test(feeling_heard ~ condition, data = scores))
   label_summary(phase1) |>
     mutate(across(c(mean, sd), ~ round(.x, 2))) |>
     knitr::kable(caption = "Feeling Heard (1-7) by label condition, analysed participants.")
 } else {
-  message("Welch t test not run: it needs at least two analysed participants in each label condition; ",
-          "there are ", nrow(scores), " analysed participant(s) so far.")
+  message("Welch t test not run: it needs at least two analysed participants in each label condition, ",
+          "and some variation in Feeling Heard; there are ", nrow(scores), " analysed participant(s) so far.")
 }
 ```
 
@@ -788,14 +763,33 @@ effects_plot(Original = measure_effects(original_measures),
 ```
 
 ```{r}
+#| label: manipulation-check
+#| eval: !expr have_data
+# Exploratory: suspicion about the true source of the reply, 1 (not at all) to 7 (very much), by label. In the AI-label
+# group the item asks about suspecting a human wrote it; in the human-label group, about suspecting an AI.
+if (!"suspicion" %in% names(keep)) keep$suspicion <- NA
+keep |>
+  mutate(suspicion = as.numeric(suspicion)) |>
+  group_by(condition) |>
+  summarise(n = sum(!is.na(suspicion)), Mean = round(mean(suspicion, na.rm = TRUE), 2),
+            SD = round(sd(suspicion, na.rm = TRUE), 2),
+            `% rating 5 to 7` = round(100 * mean(suspicion >= 5, na.rm = TRUE), 0), .groups = "drop") |>
+  knitr::kable(caption = "Exploratory: suspicion about the source of the reply, by label (analysed participants).")
+```
+
+```{r}
 #| label: data-quality
 #| eval: !expr have_data
-if (nrow(errors) > 0) {
-  errors |> select(any_of(c("at", "trial_index", "message"))) |> head(20) |>
-    knitr::kable(caption = "JavaScript errors reported from participants' browsers.")
-} else {
-  message("No errors were reported from participants' browsers.")
-}
+# Qualtrics records no browser errors, so check the things that can go wrong in this design instead: technical
+# problems the participant reported, pasting into the description box, and how long the reply took to appear.
+for (col in c("tech_issues", "desc_paste_attempts", "wait_ms")) if (!col %in% names(participants)) participants[[col]] <- NA
+participants |>
+  filter(completed) |>
+  summarise(`Finished` = n(),
+            `Reported a technical issue (chat)` = sum(as.numeric(tech_issues) == 2, na.rm = TRUE),
+            `Tried to paste into the description` = sum(as.numeric(desc_paste_attempts) > 0, na.rm = TRUE),
+            `Median wait before the reply (s)` = round(median(as.numeric(wait_ms), na.rm = TRUE) / 1000, 1)) |>
+  knitr::kable(caption = "Data-quality checks (completers).")
 ```
 
 ## Discussion
@@ -960,8 +954,8 @@ if (!have_phase2) {
     "::: {.callout-warning icon=false}\n",
     "## No Phase 2 data yet\n\n",
     "There are no exported data for `", experiment_id_phase2, "` yet, so the Phase 2 results are ",
-    "skipped. Export with `npm run export -- --experiment ", experiment_id_phase2,
-    " --key <path to your key>` once Phase 2 has run.\n",
+    "skipped. Export with `node qualtrics/export-data.js --id ", experiment_id_phase2,
+    "` once Phase 2 has run.\n",
     ":::\n", sep = "")
 }
 ```

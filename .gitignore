@@ -44,6 +44,7 @@ playwright/.cache/
 # The paper being replicated. Keep a copy here locally if it helps you or your agent, but it is
 # never committed: the repository is public and most papers cannot be redistributed.
 original_paper/
+private-note/
 
 # Exported data: the CSVs are anonymous and meant to be committed (see docs/student-guide.md).
 # The one exception is the identifier mapping, which links anonymous ids to Prolific ids.
